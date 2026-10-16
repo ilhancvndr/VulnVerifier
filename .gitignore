@@ -19,3 +19,7 @@ build/
 # Yalnizca yerel gelistirme ve kabul dosyalari
 /tests/
 /RULES.md
+/ACCEPTANCE.md
+/CHANGELOG.md
+/FEATURES.md
+/ROADMAP.md
