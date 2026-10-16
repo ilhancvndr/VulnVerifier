@@ -146,11 +146,123 @@ from vulnverifier.tool_management import (
     tumHariciAraclariIncele,
 )
 
+ANA_YARDIM_METNI = (
+    "Yetkili ortamlarda kanıt odaklı zafiyet doğrulama aracı.\n\n"
+    "VulnVerifier; Nmap, testssl.sh ve Metasploit tabanlı kontrolleri çalıştırır, "
+    "sonuçları ortak bir durum modeline dönüştürür, evidence dosyalarını oluşturur "
+    "ve doğrulama geçmişini SQLite veritabanına kaydeder."
+)
+ANA_YARDIM_SONU = """
+[bold]Güvenlik[/bold]
+Bu araç yalnızca açıkça yetkilendirilmiş hedeflerde kullanılmalıdır. Her doğrulamada en az bir
+[bold]--allow-target[/bold] belirtilmelidir. Intrusive kontroller ayrıca
+[bold]--confirm-intrusive[/bold] gerektirir.
+
+[bold]Hızlı başlangıç[/bold]
+  vulnverifier doctor
+  vulnverifier list
+  vulnverifier verify port-service-discovery \\
+    --target 127.0.0.1 \\
+    --port 8000 \\
+    --allow-target 127.0.0.1
+
+Bir komut hakkında ayrıntılı bilgi: [bold]vulnverifier KOMUT --help[/bold]
+"""
+LISTE_YARDIM_SONU = """
+Her kontrol için kontrol kimliği, başlık, risk seviyesi ve gerekli harici araçlar gösterilir.
+Kontrol kimliği [bold]verify[/bold] komutunun ilk argümanı olarak kullanılır.
+
+[bold]Örnek[/bold]
+  vulnverifier list
+  vulnverifier verify sslv2-sslv3-support \\
+    --target example.com \\
+    --port 443 \\
+    --allow-target example.com
+"""
+DOCTOR_YARDIM_SONU = """
+Python sürümü ile Nmap, testssl.sh ve Metasploit kurulumları, sürümleri ve varsayılan timeout
+değerleri kontrol edilir. Bu komut ağ taraması başlatmaz ve hedef parametresi almaz.
+
+[bold]Örnek[/bold]
+  vulnverifier doctor
+"""
+VERITABANI_YARDIM_SONU = """
+Komut veritabanını açar veya oluşturur, güncel şemayı uygular, SQLite ve şema sürümlerini
+gösterir ve foreign key desteğini kontrol eder.
+
+[bold]Örnekler[/bold]
+  vulnverifier database-check
+  vulnverifier database-check --database ./data/vulnverifier.db
+"""
+GECMIS_YARDIM_SONU = """
+[bold]Örnekler[/bold]
+  vulnverifier history
+  vulnverifier history --project musteri-a --limit 20 --database ./data/vulnverifier.db
+"""
+BULGULAR_YARDIM_SONU = """
+Aynı bulguyu doğrulayan farklı yöntemler ortak bulgu anahtarı üzerinden ilişkilendirilir.
+
+[bold]Örnekler[/bold]
+  vulnverifier findings
+  vulnverifier findings --project musteri-a --limit 20
+"""
+DOGRULAMA_YARDIM_SONU = """
+Kontrol kimliklerini görmek için: [bold]vulnverifier list[/bold]
+
+Her çalıştırmada hedef, [bold]--allow-target[/bold] seçeneklerinden en az biri tarafından
+kapsanmalıdır. Intrusive kontroller ayrıca [bold]--confirm-intrusive[/bold] gerektirir. Port
+belirtilmezse kontrolün varsayılan portu veya tarama profili kullanılır.
+
+[bold]Güvenli kontrol[/bold]
+  vulnverifier verify port-service-discovery \\
+    --target 192.0.2.10 \\
+    --port 443 \\
+    --allow-target 192.0.2.10
+
+[bold]CIDR ile yetkilendirme[/bold]
+  vulnverifier verify port-service-discovery \\
+    --target 192.0.2.10 \\
+    --allow-target 192.0.2.0/24
+
+[bold]Birden fazla port[/bold]
+  vulnverifier verify port-service-discovery \\
+    --target 192.0.2.10 \\
+    --port 80 \\
+    --port 443 \\
+    --allow-target 192.0.2.10
+
+[bold]Intrusive kontrol[/bold]
+  vulnverifier verify dns-cache-snooping \\
+    --target 192.0.2.53 \\
+    --port 53 \\
+    --allow-target 192.0.2.53 \\
+    --confirm-intrusive
+
+[bold]Özel kayıt yolları[/bold]
+  vulnverifier verify port-service-discovery \\
+    --target 127.0.0.1 \\
+    --port 8000 \\
+    --allow-target 127.0.0.1 \\
+    --project yerel-test \\
+    --database ./data/vulnverifier.db \\
+    --evidence-dir ./data/evidence
+
+[bold]Çıkış kodları[/bold]
+   0  Zafiyet doğrulanmadı.
+  10  Zafiyet veya potansiyel zafiyet tespit edildi.
+  20  Sonuç kesinleştirilemedi.
+  30  Kontrol atlandı.
+  40  Kontrol hatayla tamamlandı.
+   2  Girdi veya güvenlik politikası nedeniyle işlem reddedildi.
+"""
+
 uygulama = typer.Typer(
     add_completion=False,
-    help="Yetkili ortamlarda kanıt odaklı zafiyet doğrulama aracı.",
+    help=ANA_YARDIM_METNI,
+    epilog=ANA_YARDIM_SONU,
     invoke_without_command=True,
     no_args_is_help=True,
+    rich_markup_mode="rich",
 )
 konsol = Console()
 VARSAYILAN_KANIT_ANA_DIZINI = Path("evidence")
@@ -170,7 +282,11 @@ class CalismaCiktisiProtokolu(Protocol):
 
 
 # Kullanilabilir dogrulama kontrollerini listeler.
-@uygulama.command("list", help="Kullanılabilir doğrulama kontrollerini listeler.")
+@uygulama.command(
+    "list",
+    help="Kullanılabilir doğrulama kontrollerini listeler.",
+    epilog=LISTE_YARDIM_SONU,
+)
 def kontrolleriListele() -> None:
     kayitliKontroller = varsayilanKatalog.kontrolleriListele()
     if not kayitliKontroller:
@@ -196,7 +312,11 @@ def kontrolleriListele() -> None:
 
 
 # Calisma ortamini ve planlanan harici araclari kontrol eder.
-@uygulama.command("doctor", help="Çalışma ortamını ve planlanan harici araçları kontrol eder.")
+@uygulama.command(
+    "doctor",
+    help="Çalışma ortamını ve harici araçları kontrol eder.",
+    epilog=DOCTOR_YARDIM_SONU,
+)
 def ortamKontrolu() -> None:
     tablo = Table(title="VulnVerifier ortam kontrolü")
     tablo.add_column("Bileşen")
@@ -229,7 +349,11 @@ def ortamKontrolu() -> None:
 
 
 # SQLite dosyasini olusturur ve temel baglanti ayarlarini dogrular.
-@uygulama.command("database-check", help="SQLite veritabanı bağlantısını kontrol eder.")
+@uygulama.command(
+    "database-check",
+    help="SQLite veritabanı bağlantısını ve şemasını kontrol eder.",
+    epilog=VERITABANI_YARDIM_SONU,
+)
 def veritabaniKontrolu(
     veritabaniYolu: Annotated[
         Path,
@@ -257,7 +381,11 @@ def veritabaniKontrolu(
 
 
 # SQLite icindeki en yeni dogrulama calismalarini listeler.
-@uygulama.command("history", help="Kaydedilmiş doğrulama geçmişini listeler.")
+@uygulama.command(
+    "history",
+    help="SQLite veritabanına kaydedilmiş doğrulama çalışmalarını listeler.",
+    epilog=GECMIS_YARDIM_SONU,
+)
 def taramaGecmisiniListele(
     projeAdi: Annotated[
         str | None,
@@ -308,7 +436,11 @@ def taramaGecmisiniListele(
 
 
 # Ortak bulgu anahtarina gore birlestirilmis son durumlari listeler.
-@uygulama.command("findings", help="Kaydedilmiş bulguları listeler.")
+@uygulama.command(
+    "findings",
+    help="SQLite veritabanındaki birleştirilmiş bulguları listeler.",
+    epilog=BULGULAR_YARDIM_SONU,
+)
 def bulgulariListele(
     projeAdi: Annotated[
         str | None,
@@ -356,33 +488,47 @@ def bulgulariListele(
 # Secilen kontrolu gercek motoruyla calistirir ve standart sonucu gosterir.
 @uygulama.command(
     "verify",
-    help="Seçilen doğrulama kontrolünü çalıştırır.",
+    help="Seçilen doğrulama kontrolünü yetkili hedefte çalıştırır.",
+    epilog=DOGRULAMA_YARDIM_SONU,
 )
 @eszamanliKontroluSinirla
 def dogrula(
-    kontrolKimligi: Annotated[str, typer.Argument(help="Çalıştırılacak kontrolün kimliği.")],
-    hedef: Annotated[str, typer.Option("--target", "-t", help="Yetkili test hedefi.")],
+    kontrolKimligi: Annotated[
+        str,
+        typer.Argument(help="Çalıştırılacak kontrol kimliği; seçenekleri görmek için `list`."),
+    ],
+    hedef: Annotated[
+        str,
+        typer.Option("--target", "-t", help="Doğrulanacak IP adresi veya hostname."),
+    ],
     portlar: Annotated[
         list[str] | None,
-        typer.Option("--port", "-p", help="Doğrulanacak port; birden fazla kez kullanılabilir."),
+        typer.Option(
+            "--port",
+            "-p",
+            help="Doğrulanacak port; desteklenen kontrollerde birden fazla kez kullanılabilir.",
+        ),
     ] = None,
     projeAdi: Annotated[
         str,
-        typer.Option("--project", help="Doğrulamanın kaydedileceği proje adı."),
+        typer.Option("--project", help="SQLite kayıtlarının ilişkilendirileceği proje adı."),
     ] = VARSAYILAN_PROJE_ADI,
     veritabaniYolu: Annotated[
         Path | None,
-        typer.Option("--database", help="Kullanılacak SQLite dosyasının yolu."),
+        typer.Option("--database", help="Kullanılacak SQLite veritabanının yolu."),
     ] = None,
     evidenceDizini: Annotated[
         Path | None,
-        typer.Option("--evidence-dir", help="Evidence dosyalarının ana dizini."),
+        typer.Option("--evidence-dir", help="Evidence dosyalarının yazılacağı ana dizin."),
     ] = None,
     izinliHedefler: Annotated[
         list[str] | None,
         typer.Option(
             "--allow-target",
-            help="Yetkili hedef veya CIDR; birden fazla kez kullanılabilir.",
+            help=(
+                "Yetkili IP, hostname veya CIDR; birden fazla kez kullanılabilir ve "
+                "hedefi kapsamalıdır."
+            ),
         ),
     ] = None,
     intrusiveOnayi: Annotated[
