@@ -1,0 +1,21 @@
+.DS_Store
+.venv/
+.venv-old/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+evidence/
+guvenli-evidence/
+.coverage
+htmlcov/
+*.db
+*.db-shm
+*.db-wal
+dist/
+build/
+
+# Yalnizca yerel gelistirme ve kabul dosyalari
+/tests/
+/RULES.md
