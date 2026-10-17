@@ -154,17 +154,16 @@ ANA_YARDIM_METNI = (
 )
 ANA_YARDIM_SONU = """
 [bold]Güvenlik[/bold]
-Bu araç yalnızca açıkça yetkilendirilmiş hedeflerde kullanılmalıdır. Her doğrulamada en az bir
-[bold]--allow-target[/bold] belirtilmelidir. Intrusive kontroller ayrıca
-[bold]--confirm-intrusive[/bold] gerektirir.
+Bu araç yalnızca açıkça yetkilendirilmiş hedeflerde kullanılmalıdır. [bold]--allow-target[/bold]
+verilmezse yalnızca [bold]--target[/bold] hedefinin kendisine izin verilir. Intrusive kontroller
+ayrıca [bold]--confirm-intrusive[/bold] gerektirir.
 
 [bold]Hızlı başlangıç[/bold]
   vulnverifier doctor
   vulnverifier list
   vulnverifier verify port-service-discovery \\
     --target 127.0.0.1 \\
-    --port 8000 \\
-    --allow-target 127.0.0.1
+    --port 8000
 
 Bir komut hakkında ayrıntılı bilgi: [bold]vulnverifier KOMUT --help[/bold]
 """
@@ -176,8 +175,7 @@ Kontrol kimliği [bold]verify[/bold] komutunun ilk argümanı olarak kullanılı
   vulnverifier list
   vulnverifier verify sslv2-sslv3-support \\
     --target example.com \\
-    --port 443 \\
-    --allow-target example.com
+    --port 443
 """
 DOCTOR_YARDIM_SONU = """
 Python sürümü ile Nmap, testssl.sh ve Metasploit kurulumları, sürümleri ve varsayılan timeout
@@ -209,15 +207,15 @@ Aynı bulguyu doğrulayan farklı yöntemler ortak bulgu anahtarı üzerinden il
 DOGRULAMA_YARDIM_SONU = """
 Kontrol kimliklerini görmek için: [bold]vulnverifier list[/bold]
 
-Her çalıştırmada hedef, [bold]--allow-target[/bold] seçeneklerinden en az biri tarafından
-kapsanmalıdır. Intrusive kontroller ayrıca [bold]--confirm-intrusive[/bold] gerektirir. Port
+[bold]--allow-target[/bold] verilmezse yalnızca [bold]--target[/bold] değerinin kendisi örtük
+yetkili kapsam sayılır. Seçenek verilirse hedef IP, hostname veya CIDR kapsamlarından biriyle
+eşleşmelidir. Intrusive kontroller ayrıca [bold]--confirm-intrusive[/bold] gerektirir. Port
 belirtilmezse kontrolün varsayılan portu veya tarama profili kullanılır.
 
 [bold]Güvenli kontrol[/bold]
   vulnverifier verify port-service-discovery \\
     --target 192.0.2.10 \\
-    --port 443 \\
-    --allow-target 192.0.2.10
+    --port 443
 
 [bold]CIDR ile yetkilendirme[/bold]
   vulnverifier verify port-service-discovery \\
@@ -228,21 +226,18 @@ belirtilmezse kontrolün varsayılan portu veya tarama profili kullanılır.
   vulnverifier verify port-service-discovery \\
     --target 192.0.2.10 \\
     --port 80 \\
-    --port 443 \\
-    --allow-target 192.0.2.10
+    --port 443
 
 [bold]Intrusive kontrol[/bold]
   vulnverifier verify dns-cache-snooping \\
     --target 192.0.2.53 \\
     --port 53 \\
-    --allow-target 192.0.2.53 \\
     --confirm-intrusive
 
 [bold]Özel kayıt yolları[/bold]
   vulnverifier verify port-service-discovery \\
     --target 127.0.0.1 \\
     --port 8000 \\
-    --allow-target 127.0.0.1 \\
     --project yerel-test \\
     --database ./data/vulnverifier.db \\
     --evidence-dir ./data/evidence
@@ -525,10 +520,7 @@ def dogrula(
         list[str] | None,
         typer.Option(
             "--allow-target",
-            help=(
-                "Yetkili IP, hostname veya CIDR; birden fazla kez kullanılabilir ve "
-                "hedefi kapsamalıdır."
-            ),
+            help="İsteğe bağlı yetkili IP, hostname veya CIDR; verilirse hedefi kapsamalıdır.",
         ),
     ] = None,
     intrusiveOnayi: Annotated[

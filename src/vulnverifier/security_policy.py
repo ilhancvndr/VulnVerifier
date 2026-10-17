@@ -32,15 +32,16 @@ def guvenlikPolitikasiniDogrula(
         standartHedef = hedefiDogrula(hedef)
     except TargetValidationError as hata:
         raise GuvenlikPolitikasiHatasi("Guvenlik politikasi gecersiz hedefi reddetti.") from hata
-    if not izinliHedefler or isinstance(izinliHedefler, (str, bytes)):
-        raise GuvenlikPolitikasiHatasi(
-            "En az bir --allow-target ile yetkili hedef kapsami belirtilmelidir."
-        )
-    if len(izinliHedefler) > AZAMI_KAPSAM_GIRDISI:
+    if isinstance(izinliHedefler, (str, bytes)):
+        raise GuvenlikPolitikasiHatasi("Allowlist bir hedef listesi olarak verilmelidir.")
+    etkinIzinliHedefler = tuple(izinliHedefler) if izinliHedefler else (standartHedef,)
+    if len(etkinIzinliHedefler) > AZAMI_KAPSAM_GIRDISI:
         raise GuvenlikPolitikasiHatasi(
             f"En fazla {AZAMI_KAPSAM_GIRDISI} allowlist girdisi kullanilabilir."
         )
-    kapsamSonuclari = tuple(_hedefKapsamdaMi(standartHedef, kapsam) for kapsam in izinliHedefler)
+    kapsamSonuclari = tuple(
+        _hedefKapsamdaMi(standartHedef, kapsam) for kapsam in etkinIzinliHedefler
+    )
     if not any(kapsamSonuclari):
         raise GuvenlikPolitikasiHatasi(f"Hedef izinli kapsam listesinde degil: {standartHedef}")
 

@@ -78,7 +78,6 @@ Doğrulamalar varsayılan olarak `default` projesine ve `vulnverifier.db` dosyas
 vulnverifier verify port-service-discovery \
   --target 192.0.2.10 \
   --port 443 \
-  --allow-target 192.0.2.10 \
   --project musteri-a \
   --database ./data/vulnverifier.db
 ```
@@ -95,11 +94,10 @@ Yetkili bir hedefte belirli bir portu doğrulamak için:
 ```bash
 vulnverifier verify port-service-discovery \
   --target 192.0.2.10 \
-  --port 443 \
-  --allow-target 192.0.2.10
+  --port 443
 ```
 
-Her doğrulamada en az bir `--allow-target` verilmelidir. Tek IP/hostname veya CIDR kullanılabilir ve seçenek birden fazla kez tekrarlanabilir. Hedef bu listenin dışındaysa araç çalıştırılmaz. `intrusive` kontroller ayrıca `--confirm-intrusive` olmadan başlatılmaz.
+`--allow-target` verilmezse yalnızca `--target` ile belirtilen kesin hedef örtük olarak yetkili kabul edilir. Daha geniş veya açık bir kapsam denetimi gerektiğinde tek IP, hostname ya da CIDR ile `--allow-target` kullanılabilir ve seçenek birden fazla kez tekrarlanabilir. Seçenek verilmişse hedef bu listenin dışında kaldığında araç çalıştırılmaz. `intrusive` kontroller ayrıca `--confirm-intrusive` olmadan başlatılmaz.
 
 Birden fazla port için `--port` seçeneğini tekrarlayın. `--port` verilmezse Nmap varsayılan en yaygın 1000 TCP portunu tarar. Sonuç, yapılandırılmış kanıtlar ve evidence dosyalarının SHA-256 değerleri terminalde gösterilir. Dosyalar varsayılan olarak proje dizinindeki `evidence/` klasörüne yazılır. Farklı bir ana dizin kullanmak için `--evidence-dir` verilebilir.
 
@@ -117,8 +115,7 @@ Bir TLS servisinde SSLv2 ve SSLv3 desteğini doğrulamak için:
 ```bash
 vulnverifier verify sslv2-sslv3-support \
   --target example.com \
-  --port 443 \
-  --allow-target example.com
+  --port 443
 ```
 
 Bu kontrolde port verilmezse `443` kullanılır. Kontrol tek çalışmada bir port kabul eder. Bir hostname birden fazla IP adresine çözülürse her IP sonucu ayrı tutulur. Herhangi bir IP SSLv2 veya SSLv3 sunuyorsa sonuç `VULNERABLE`, yalnızca bütün IP'lerde ikisi de kapalı ve modern bir TLS protokolü açıksa `NOT_VULNERABLE`, sonuçlardan biri eksikse `INCONCLUSIVE` olur.
@@ -128,8 +125,7 @@ Yetkili bir HPE iLO hedefinde ürün ve firmware sürümünü tespit etmek için
 ```bash
 vulnverifier verify hpe-ilo-version-detection \
   --target 192.168.1.50 \
-  --port 443 \
-  --allow-target 192.168.1.50
+  --port 443
 ```
 
 Bu kontrolde port verilmezse `443` kullanılır ve tek çalışmada yalnızca bir port kabul edilir. iLO türü ile firmware sürümü birlikte tespit edilirse sonuç `POTENTIALLY_VULNERABLE` olur; bu durum tek başına kesin bir zafiyet anlamına gelmez. Port filtreliyse veya iLO bilgisi alınamazsa sonuç `INCONCLUSIVE` olur.
@@ -139,8 +135,7 @@ Bir TLS servisinde anonymous cipher desteğini doğrulamak için:
 ```bash
 vulnverifier verify anonymous-cipher-support \
   --target testssl.net \
-  --port 443 \
-  --allow-target testssl.net
+  --port 443
 ```
 
 Bu kontrolde port verilmezse `443` kullanılır ve tek çalışmada yalnızca bir port kabul edilir. Herhangi bir IP anonymous cipher sunuyorsa sonuç `VULNERABLE`, bütün IP sonuçları kesin olarak kapalıysa `NOT_VULNERABLE`, eksik veya anlaşılamayan bir sonuç varsa `INCONCLUSIVE` olur.
@@ -150,8 +145,7 @@ Yetkili bir RDP hedefinde MS12-020 zafiyetini Metasploit ile doğrulamak için:
 ```bash
 vulnverifier verify ms12-020-metasploit \
   --target 192.0.2.10 \
-  --port 3389 \
-  --allow-target 192.0.2.10
+  --port 3389
 ```
 
 Bu kontrolde port verilmezse `3389` kullanılır ve tek çalışmada yalnızca bir port kabul edilir. Metasploit zafiyeti doğrularsa sonuç `VULNERABLE`, hedefin etkilenmediğini bildirirse `NOT_VULNERABLE`, RDP servisine ulaşılamaz veya durum kesinleştirilemezse `INCONCLUSIVE` olur. Kullanılan `auxiliary/scanner/rdp/ms12_020_check` modülü zafiyeti kontrol eder; DoS modülü çalıştırılmaz.
@@ -161,8 +155,7 @@ Yetkili bir hedefte varsayılan SNMP `public` community değerini doğrulamak i�
 ```bash
 sudo .venv/bin/vulnverifier verify snmp-public-community \
   --target 192.168.1.50 \
-  --port 161 \
-  --allow-target 192.168.1.50
+  --port 161
 ```
 
 Bu kontrolde port verilmezse `161/udp` kullanılır ve tek çalışmada yalnızca bir port kabul edilir. `snmp-sysdescr` yanıtı alınırsa `public` community doğrulanır ve sonuç `VULNERABLE` olur. UDP yanıtı alınamazsa güvenli olduğu varsayılmaz; sonuç `INCONCLUSIVE` olur. Nmap UDP taraması macOS üzerinde yönetici yetkisi gerektirdiği için komut `sudo` ile çalıştırılır. Evidence klasörü bu kullanımda `root` sahibi olabilir.
@@ -172,8 +165,7 @@ Yetkili bir VMware ESX veya ESXi hedefinde sürüm bilgisini tespit etmek için:
 ```bash
 vulnverifier verify vmware-esxi-version-detection \
   --target 192.168.1.60 \
-  --port 443 \
-  --allow-target 192.168.1.60
+  --port 443
 ```
 
 Bu doğrulamada port verilmezse `443/tcp` kullanılır. Ürün ve sürüm bilgisi tespit edilirse sonuç `POTENTIALLY_VULNERABLE` olur; bu sonuç kesin zafiyet anlamına gelmez ve sürümün ayrıca güvenlik duyurularıyla karşılaştırılması gerekir. Port kapalı, filtreli veya VMware SOAP bilgisi alınamazsa sonuç `INCONCLUSIVE` olur.
@@ -183,8 +175,7 @@ Yetkili bir SMB hedefinde MS17-010 durumunu Metasploit ile doğrulamak için:
 ```bash
 vulnverifier verify ms17-010-metasploit \
   --target 192.168.1.70 \
-  --port 445 \
-  --allow-target 192.168.1.70
+  --port 445
 ```
 
 Port verilmezse `445/tcp` kullanılır. Sonuç `VULNERABLE`, `NOT_VULNERABLE` veya `INCONCLUSIVE` olabilir. Yalnızca `auxiliary/scanner/smb/smb_ms17_010` tarayıcısı kullanılır; exploit çalıştırılmaz. DoublePulsar, mimari ve named-pipe ek sorguları açıkça kapatılır.
@@ -195,7 +186,6 @@ Yetkili bir DNS sunucusunda cache snooping doğrulaması yapmak için:
 sudo .venv/bin/vulnverifier verify dns-cache-snooping \
   --target 192.168.1.53 \
   --port 53 \
-  --allow-target 192.168.1.53 \
   --confirm-intrusive
 ```
 
@@ -206,8 +196,7 @@ Yetkili bir SMB hedefinde MS17-010 durumunu Nmap ile doğrulamak için:
 ```bash
 vulnverifier verify ms17-010-nmap \
   --target 192.168.1.70 \
-  --port 445 \
-  --allow-target 192.168.1.70
+  --port 445
 ```
 
 Port verilmezse `445/tcp` kullanılır. Güvenli `smb-vuln-ms17-010` NSE betiği çalıştırılır; exploit uygulanmaz. `vulns.showall=1` argümanı sayesinde yamalı sistem sonucu da açıkça alınır. Sonuç `VULNERABLE`, `NOT_VULNERABLE` veya kesin NSE sonucu üretilemediğinde `INCONCLUSIVE` olabilir. Bu yöntem ve Metasploit yöntemi aynı `ms17-010-smb-vulnerability` bulgu anahtarına bağlıdır.
@@ -218,7 +207,6 @@ Yetkili bir RDP hedefinde MS12-020 durumunu Nmap ile doğrulamak için:
 vulnverifier verify ms12-020-nmap \
   --target 192.168.1.50 \
   --port 3389 \
-  --allow-target 192.168.1.50 \
   --confirm-intrusive
 ```
 
@@ -230,7 +218,6 @@ Yetkili bir IPMI 2.0 hedefinde RAKP parola hash disclosure durumunu doğrulamak 
 vulnverifier verify ipmi-v2-hash-disclosure \
   --target 192.168.1.80 \
   --port 623 \
-  --allow-target 192.168.1.80 \
   --confirm-intrusive
 ```
 
@@ -241,8 +228,7 @@ Yetkili bir TLS servisinde FREAK ve EXPORT RSA desteğini doğrulamak için:
 ```bash
 vulnverifier verify freak-export-rsa \
   --target testssl.net \
-  --port 443 \
-  --allow-target testssl.net
+  --port 443
 ```
 
 Port verilmezse `443/tcp` kullanılır ve tek çalışmada yalnızca bir port kabul edilir. `testssl.sh --freak` çıktısı her IP için ayrı değerlendirilir. En az bir tarama noktası EXPORT RSA cipher sunduğunda `VULNERABLE`, bütün tarama noktaları açıkça etkilenmediğini bildirdiğinde `NOT_VULNERABLE`, test yapılamadığında veya sonuç eksik kaldığında `INCONCLUSIVE` üretilir.
@@ -253,7 +239,6 @@ Yetkili bir TLS servisinde OpenSSL CCS Injection durumunu doğrulamak için:
 vulnverifier verify openssl-ccs-injection \
   --target testssl.net \
   --port 443 \
-  --allow-target testssl.net \
   --confirm-intrusive
 ```
 
@@ -264,8 +249,7 @@ Yetkili bir NTP servisinde Mode 6 READVAR cevaplarını doğrulamak için:
 ```bash
 sudo .venv/bin/vulnverifier verify ntp-mode-6 \
   --target 192.168.1.123 \
-  --port 123 \
-  --allow-target 192.168.1.123
+  --port 123
 ```
 
 Port verilmezse `123/udp` kullanılır. Nmap `ntp-info` betiği bir normal zaman isteği ve tek bir Mode 6 READVAR isteği gönderir; betik çalışması 20 saniyeyle sınırlandırılır. READVAR değişkenleri alınırsa `VULNERABLE`, yalnızca normal zaman cevabı alınıp Mode 6 cevabı alınmazsa `NOT_VULNERABLE`, UDP portu cevap vermediğinde `INCONCLUSIVE` üretilir. UDP taraması macOS üzerinde `sudo` gerektirir.
