@@ -36,6 +36,9 @@ def hedefiDogrula(hedef: str) -> str:
     if all(karakter in "0123456789." for karakter in hedef):
         raise TargetValidationError("Geçersiz IP adresi.")
 
+    if _ipv4BenzeriMi(hedef):
+        raise TargetValidationError("Geçersiz IPv4 adresi biçimi.")
+
     standartHedef = hedef[:-1] if hedef.endswith(".") else hedef
     if not standartHedef:
         raise TargetValidationError("Hostname boş olamaz.")
@@ -53,3 +56,9 @@ def hedefiDogrula(hedef: str) -> str:
         raise TargetValidationError("Geçersiz hostname biçimi.")
 
     return standartHedef.lower()
+
+
+def _ipv4BenzeriMi(hedef: str) -> bool:
+    # Dort parcali ve en az uc sayisal etiketi olan hatali IPv4 girdisini yakalar.
+    etiketler = hedef.removesuffix(".").split(".")
+    return len(etiketler) == 4 and sum(etiket.isdigit() for etiket in etiketler) >= 3

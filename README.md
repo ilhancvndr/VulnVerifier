@@ -2,17 +2,16 @@
 
 VulnVerifier, yalnızca yetkili güvenlik testlerinde kullanılmak üzere geliştirilen, kanıt odaklı bir zafiyet doğrulama aracıdır.
 
-MVP `0.1.0` sürümünde ilk 15 doğrulama yönteminin tamamı standart sonuç modeli ve evidence altyapısıyla birlikte `verify` komutuna bağlanmıştır.
+MVP `0.1.0` sürümündeki ilk 15 doğrulama yöntemine ek olarak SMB güvenlik keşfi de standart sonuç modeli ve evidence altyapısıyla birlikte `verify` komutuna bağlanmıştır.
 
 ## Gereksinimler
 
 - Python 3.12 veya üzeri
-- Geliştirme ve test için `pytest` ile Ruff
+- Standart PNG kanıt görüntüleri için Pillow
 - Port ve servis keşfi için Nmap
-- HPE iLO sürüm tespiti için Nmap ve `http-hp-ilo-info` NSE betiği
-- SSLv2/SSLv3 desteği kontrolü için `testssl.sh`
-- FREAK EXPORT RSA kontrolü için `testssl.sh`
-- MS12-020 kontrolü için PATH içinde erişilebilir `msfconsole`
+- Nmap tabanlı kontroller için kurulumla gelen ilgili NSE betikleri
+- TLS kontrolleri için `testssl.sh`
+- Metasploit tabanlı kontroller için PATH içinde erişilebilir `msfconsole`
 
 macOS üzerinde `testssl.sh` kurulumu:
 
@@ -99,6 +98,11 @@ vulnverifier verify port-service-discovery \
 
 `--allow-target` verilmezse yalnızca `--target` ile belirtilen kesin hedef örtük olarak yetkili kabul edilir. Daha geniş veya açık bir kapsam denetimi gerektiğinde tek IP, hostname ya da CIDR ile `--allow-target` kullanılabilir ve seçenek birden fazla kez tekrarlanabilir. Seçenek verilmişse hedef bu listenin dışında kaldığında araç çalıştırılmaz. `intrusive` kontroller ayrıca `--confirm-intrusive` olmadan başlatılmaz.
 
+Port ve servis keşfi bir zafiyet doğrulaması değildir. Açık port bulunduğunda sonuç
+`DISCOVERED`, istenen port kesin olarak kapalıysa `NOT_FOUND` olur. Bu iki durum da `0`
+çıkış kodu üretir ve `findings` listesine zafiyet olarak eklenmez; çalışma geçmişi ve
+evidence kayıtları yine korunur.
+
 Birden fazla port için `--port` seçeneğini tekrarlayın. `--port` verilmezse Nmap varsayılan en yaygın 1000 TCP portunu tarar. Sonuç, yapılandırılmış kanıtlar ve evidence dosyalarının SHA-256 değerleri terminalde gösterilir. Dosyalar varsayılan olarak proje dizinindeki `evidence/` klasörüne yazılır. Farklı bir ana dizin kullanmak için `--evidence-dir` verilebilir.
 
 ```bash
@@ -109,6 +113,44 @@ vulnverifier verify port-service-discovery \
   --allow-target 192.0.2.0/24 \
   --evidence-dir ./guvenli-evidence
 ```
+
+Herhangi bir doğrulamanın sonucunu rapora eklenebilir standart bir PNG kanıt görüntüsüne
+dönüştürmek için `--screenshot` kullanılır:
+
+```bash
+vulnverifier verify port-service-discovery \
+  --target 127.0.0.1 \
+  --port 443 \
+  --screenshot
+```
+
+Kullanıcıya sunulan PNG varsayılan olarak proje kökündeki `screenshots/` klasörüne
+yazılır. Denetim bütünlüğü için aynı açıklayıcı adla evidence klasöründe de tutulur;
+SHA-256 değeri `*-manifest.json` ve SQLite kaydına eklenir. Görüntüde hedef, kontrol,
+durum, özet, süre ve yapılandırılmış kanıtlar bulunur. Hassas değerler mevcut evidence
+politikasıyla maskelenir. Bu seçenek tüm mevcut ve gelecekte ortak doğrulama akışına
+bağlanacak kontrollerde kullanılabilir.
+
+Varsayılan klasör yerine farklı bir konum kullanmak için `--screenshot-dir` verilebilir.
+Bu seçenek tek başına kullanıldığında da ekran görüntüsü üretimini etkinleştirir:
+
+```bash
+vulnverifier verify smb-security-discovery \
+  --target "10.0.100.2, 10.0.100.3" \
+  --port 445 \
+  --screenshot-dir ./screenshots
+```
+
+Çoklu hedeflerde her hedef için ayrı bir PNG üretilir. Kullanıcıya sunulan dosya adı
+`hedef-kontrol-durum-YYYYAAGG-SSDD.png` biçimindedir; örneğin
+`10-20-10-15-smb-security-discovery-VULNERABLE-20261023-1425.png`. Dosya adında
+saniye bulunmaz. Aynı ad mevcutsa dosyanın üzerine yazmak yerine kısa çalışma kimliği
+eklenir.
+
+Ham çıktı, hata çıktısı, normalize sonuç ve manifesto da aynı ad temelini kullanır;
+dosya türü sırasıyla `-stdout.txt`, `-stderr.txt`, `-evidence.json` ve
+`-manifest.json` son ekiyle belirtilir. Böylece dışarı alınan dosyalar klasörden ayrı
+paylaşılsa bile hedef ve doğrulama bilgisi dosya adından anlaşılır.
 
 Bir TLS servisinde SSLv2 ve SSLv3 desteğini doğrulamak için:
 
@@ -221,7 +263,7 @@ vulnverifier verify ipmi-v2-hash-disclosure \
   --confirm-intrusive
 ```
 
-Port verilmezse `623/udp` kullanılır. Metasploit `auxiliary/scanner/ipmi/ipmi_dumphashes` modülü tek iş parçacığıyla çalıştırılır ve otomatik parola kırma davranışı `CRACK_COMMON false` ile kapatılır. Hash alınırsa `VULNERABLE`; cevap alınamazsa veya hash bulunamazsa `INCONCLUSIVE` üretilir. Tam hash diske yazılmadan önce ham stdout içinde maskelenir. CLI ve `evidence.json` içinde kullanıcı adıyla beraber hash’in SHA-256 parmak izi gösterilir.
+Port verilmezse `623/udp` kullanılır. Metasploit `auxiliary/scanner/ipmi/ipmi_dumphashes` modülü tek iş parçacığıyla çalıştırılır ve otomatik parola kırma davranışı `CRACK_COMMON false` ile kapatılır. Hash alınırsa `VULNERABLE`; cevap alınamazsa veya hash bulunamazsa `INCONCLUSIVE` üretilir. Kullanıcı tercihi gereği tam RAKP hash değeri ham ve normalize evidence içinde saklanır. Bu dosyalar hassastır; VulnVerifier evidence dizinlerini `0700`, dosyaları `0600` izinleriyle oluşturur ve yalnızca yetkili kişilerle paylaşılmalıdır.
 
 Yetkili bir TLS servisinde FREAK ve EXPORT RSA desteğini doğrulamak için:
 
@@ -254,9 +296,59 @@ sudo .venv/bin/vulnverifier verify ntp-mode-6 \
 
 Port verilmezse `123/udp` kullanılır. Nmap `ntp-info` betiği bir normal zaman isteği ve tek bir Mode 6 READVAR isteği gönderir; betik çalışması 20 saniyeyle sınırlandırılır. READVAR değişkenleri alınırsa `VULNERABLE`, yalnızca normal zaman cevabı alınıp Mode 6 cevabı alınmazsa `NOT_VULNERABLE`, UDP portu cevap vermediğinde `INCONCLUSIVE` üretilir. UDP taraması macOS üzerinde `sudo` gerektirir.
 
+Yetkili SMB hedeflerinin kimlik ve güvenlik yapılandırmasını keşfetmek için:
+
+```bash
+vulnverifier verify smb-security-discovery \
+  --target 192.168.1.50 \
+  --port 445
+```
+
+Birden fazla hedef virgülle ayrılarak verilebilir:
+
+```bash
+vulnverifier verify smb-security-discovery \
+  --target "10.0.100.2, 10.0.100.3, 10.0.100.20" \
+  --port 445
+```
+
+CIDR blokları kullanılabilir ve birden fazla blok aynı komutta birleştirilebilir:
+
+```bash
+vulnverifier verify smb-security-discovery \
+  --target "10.20.10.0/24, 10.30.10.0/24" \
+  --port 445 \
+  --screenshot
+```
+
+IPv4 CIDR bloklarında network ve broadcast adresleri tarama dışında tutulur. Tekil
+hedefler ve CIDR blokları birleştirilip tekrarlar kaldırıldıktan sonra en fazla 4096 hedef
+kullanılabilir.
+
+Hedefler isteğe bağlı bir UTF-8 metin dosyasından da okunabilir. Boş satırlar ile `#` karakteriyle başlayan açıklamalar yok sayılır. `--target` ve `--target-file` birlikte kullanıldığında girdiler birleştirilir ve tekrarlar kaldırılır.
+
+```bash
+vulnverifier verify smb-security-discovery \
+  --target "10.0.100.2, 10.0.100.3" \
+  --target-file ./targets.txt
+```
+
+Hedefler varsayılan olarak en fazla dört kontrollü iş parçacığıyla taranır. Bu değer
+`--workers 1` ile sıralı çalışmaya indirilebilir veya `--workers 16` değerine kadar
+artırılabilir. Terminal ve SQLite sırası hedef giriş sırasını korur. Çoklu hedeflerde
+varsayılan terminal tablosu ve PNG üretimi kesin `VULNERABLE` sonuçları ile bilgi amaçlı
+`DISCOVERED` sonuçlarını kapsar. `-v` veya `--verbose` verilirse temiz, bulunamayan,
+potansiyel, belirsiz, atlanan ve hatalı sonuçlar da tabloda gösterilir; `--screenshot`
+ile birlikte kullanıldığında tüm sonuçlar için PNG üretilir.
+Filtre ne olursa olsun her hedefin sonucu ayrı evidence klasörü ve SQLite kaydıyla
+saklanır. Virgüllü hedef, CIDR ve `--target-file` desteği bütün mevcut ve daha sonra
+kaydedilecek kontrollerin ortak çalışma akışında kullanılabilir.
+
+Port verilmezse `445/tcp` kullanılır. Nmap `smb-os-discovery`, `smb-protocols` ve `smb2-security-mode` betiklerini birlikte çalıştırır. Bilgisayar adı, işletim sistemi, domain, SMB sürümleri, SMBv1 ve imzalama zorunluluğu yapılandırılmış kanıta dönüştürülür. SMBv1 etkinse veya SMB imzalama zorunlu değilse `VULNERABLE`; SMBv1 kapalı ve imzalama zorunluysa `NOT_VULNERABLE`; bilgiler eksik ya da port filtreliyse `INCONCLUSIVE` üretilir. Kontrol kimlik bilgisi kullanmaz.
+
 `verify` sonuç çıkış kodları:
 
-- `0`: Zafiyet doğrulanmadı (`NOT_VULNERABLE`)
+- `0`: Zafiyet doğrulanmadı veya keşif tamamlandı (`NOT_VULNERABLE`, `DISCOVERED`, `NOT_FOUND`)
 - `10`: Zafiyet veya potansiyel zafiyet tespit edildi
 - `20`: Sonuç kesinleştirilemedi (`INCONCLUSIVE`)
 - `30`: Kontrol atlandı (`SKIPPED`)
@@ -271,29 +363,11 @@ vulnverifier verify port-service-discovery \
   --port 443
 ```
 
-## Geliştirme kontrolleri
-
-Sanal ortam etkinken bütün testleri ve kod kalite kontrollerini çalıştırın:
-
-```bash
-pytest
-ruff check .
-ruff format --check .
-```
-
-Yalnızca belirli bir test dosyasını çalıştırmak için:
-
-```bash
-pytest tests/test_port_service_discovery.py -v
-```
-
 ## Paket oluşturma ve teslim kontrolü
 
-Dağıtım paketlerini oluşturmak için geliştirme bağımlılıklarının kurulu olduğu ortamda kalite
-kontrollerini çalıştırın:
+Dağıtım paketlerini oluşturmak için geliştirme bağımlılıklarının kurulu olduğu ortamda:
 
 ```bash
-pytest
 ruff check .
 ruff format --check .
 python -m build
@@ -312,35 +386,36 @@ vulnverifier doctor
 deactivate
 ```
 
-Sürüm değişiklikleri [CHANGELOG.md](CHANGELOG.md), manuel kabul sonuçları
-[ACCEPTANCE.md](ACCEPTANCE.md) dosyasında tutulur. Proje için henüz bir lisans seçilmemiştir;
-paket metadata'sında varsayımsal bir lisans beyan edilmez.
+Proje için henüz bir lisans seçilmemiştir; paket metadata'sında varsayımsal bir lisans
+beyanı bulunmaz. Public kullanım ve yeniden dağıtım koşulları yayın sahibi tarafından
+lisans dosyası eklenerek ayrıca belirlenmelidir.
 
 ## Hazır olan teknik parçalar
 
 - Shell kullanmayan merkezi komut çalıştırıcı
-- Timeout ve çalışan süreci iptal etme
+- Timeout, Ctrl+C ve program içi iptalde tüm harici süreç grubunu sonlandırma
 - IPv4, IPv6, hostname ve çoklu port doğrulama
-- Zorunlu hedef/hostname/CIDR allowlist denetimi
+- İsteğe bağlı hedef/hostname/CIDR allowlist denetimi
 - Intrusive kontroller için ayrı açık onay
 - Salt-okunur olmayan, DoS veya exploit etkili kontrol engeli
-- Uygulama sürecinde aynı anda en fazla bir kontrol
+- Çoklu hedeflerde 1-16 arası ayarlanabilir kontrollü paralellik
 - Terminal ve evidence çıktılarında hassas veri maskeleme
 - Harici araç bulunabilirlik kontrolü
 - Güvenli Nmap argüman üretimi
 - Nmap XML ayrıştırma
-- Port durumunu standart sonuca dönüştürme
+- Port keşfini zafiyetten ayıran `DISCOVERED` ve `NOT_FOUND` durumları
 - Güvenli testssl argüman üretimi
 - SSLv2, SSLv3 ve modern TLS protokol çıktısı ayrıştırma
 - testssl çoklu IP sonuçlarını ayrı değerlendirip korumacı biçimde birleştirme
 - Eski SSL protokol desteğini standart sonuca dönüştürme
 - Ham stdout ve stderr kaydı
-- Normalize `evidence.json` kaydı
+- Açıklayıcı adlı normalize `*-evidence.json` kaydı
 - Evidence dosyası SHA-256 hesaplama
 - 5 MiB ham çıktı sınırı ve hassas değer maskeleme
 - Atomik evidence yazımı ve kısmi yazım temizliği
-- Çalışma kimliği, araç sürümü, çıkış kodu, zaman ve dosya hash'lerini içeren `manifest.json`
+- Çalışma kimliği, araç sürümü, çıkış kodu, zaman ve dosya hash'lerini içeren `*-manifest.json`
 - Rich tabanlı doğrulama sonucu ve evidence gösterimi
+- Pillow tabanlı, tüm kontrollerde kullanılabilen standart PNG kanıt görüntüsü
 - Yalnızca sabit `auxiliary/scanner` modüllerine izin veren Metasploit güvenlik listesi
 - Güvenli Metasploit MS12-020 argüman üretimi ve çıktı ayrıştırma
 - Güvenli Nmap SNMP public community argüman üretimi ve XML çıktı ayrıştırma
@@ -350,15 +425,16 @@ paket metadata'sında varsayımsal bir lisans beyan edilmez.
 - Güvenli Nmap MS17-010 NSE argüman üretimi ve XML çıktı ayrıştırma
 - Aynı bulguya ait Metasploit ve Nmap doğrulama yöntemlerini ilişkilendirme
 - Nmap MS12-020 NSE argüman üretimi, XML çıktı ayrıştırma ve korumacı hata değerlendirmesi
-- Parola kırma kapalı Metasploit IPMI RAKP hash doğrulaması ve hash'i diske yazmadan maskeleyen evidence yönetimi
+- Parola kırma kapalı Metasploit IPMI RAKP hash doğrulaması ve izinleri kısıtlı hassas evidence yönetimi
 - testssl FREAK/EXPORT RSA argüman üretimi, çoklu IP ayrıştırması ve korumacı sonuç birleştirmesi
 - testssl OpenSSL CCS Injection argüman üretimi, kesinlik ayrımı ve çoklu IP değerlendirmesi
 - Nmap NTP Mode 6 READVAR sorgusu, XML ayrıştırması ve zaman cevabından ayrı değerlendirme
 
 ## Güncel sınırlamalar
 
-- MS12-020 Metasploit kontrolü filtreli RDP hedefinde manuel olarak doğrulandı; pozitif sonuç için etkilenmiş ve yetkili bir hedef gerekir.
-- HPE iLO pozitif kabul testi için erişilebilir gerçek bir iLO hedefi gerekir.
+- MS12-020 ve MS17-010 yöntemlerinin pozitif kabulü için etkilenmiş ve yetkili Windows hedefleri gerekir.
+- HPE iLO ve VMware sürüm keşiflerinin pozitif kabulü için erişilebilir gerçek yönetim hedefleri gerekir.
+- IPMI hash disclosure pozitif kabulü için yetkili ve etkilenmiş bir IPMI 2.0 hedefi gerekir.
 - İlk 15 doğrulama yönteminin tamamı kod ve yazılım testleri bakımından hazırdır.
 - SQLite şeması, kalıcı doğrulama kayıtları ve CLI geçmiş komutları hazırdır.
 - Yerel arayüz, manuel bulgu ekleme/düzenleme ve rapor oluşturma MVP sonrası kapsama taşındı.
@@ -367,5 +443,6 @@ paket metadata'sında varsayımsal bir lisans beyan edilmez.
 
 VulnVerifier yalnızca açıkça yetkilendirilmiş sistemlerde kullanılmalıdır. DoS oluşturan, hedef sistemde değişiklik yapan veya otomatik exploit çalıştıran yöntemler MVP kapsamı dışındadır.
 
-Detaylı geliştirme durumu için [FEATURES.md](FEATURES.md), çalışma kuralları için [RULES.md](RULES.md) dosyasına bakın.
+Public depo yalnızca çalıştırma için gereken kaynak kodu, paket ayarlarını ve bu kullanım
+belgesini içerir. İç geliştirme notları ve test varlıkları dağıtım paketine dahil edilmez.
 

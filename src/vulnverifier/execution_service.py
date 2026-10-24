@@ -20,6 +20,12 @@ from vulnverifier.tool_availability import AracDurumu
 type KontrolCalistirici = Callable[[str, tuple[int, ...]], KontrolSonucu]
 type BasariliAracSonucuDonusturucu = Callable[[KomutSonucu], KontrolSonucu]
 
+NMAP_YETKI_HATASI_IPUCLARI = (
+    "requires root privileges",
+    "couldn't open a raw socket",
+    "failed to open device",
+)
+
 
 class KontrolBulunamadiHatasi(LookupError):
     # Istenen kontrol katalogda bulunamadiginda olusan hatadir.
@@ -55,6 +61,20 @@ def aracSonucunuStandartlastir(
         raise KontrolCalistirmaHatasi("Başarılı sonuç dönüştürücüsü çağrılabilir olmalıdır.")
 
     if komutSonucu.cikisKodu != 0:
+        if _nmapYetkiHatasiMi(komutSonucu.standartHata):
+            return KontrolSonucu(
+                kontrolKimligi=kontrolKimligi,
+                hedef=standartHedef,
+                durum=ResultStatus.ERROR,
+                ozet="Nmap taraması yönetici veya gerekli ağ yetkileriyle çalıştırılmalıdır.",
+                kanitlar=(
+                    KanitBilgisi(
+                        anahtar="aracCikisKodu",
+                        deger=str(komutSonucu.cikisKodu),
+                    ),
+                    KanitBilgisi(anahtar="hataTuru", deger="nmapYetkiEksikligi"),
+                ),
+            )
         return KontrolSonucu(
             kontrolKimligi=kontrolKimligi,
             hedef=standartHedef,
@@ -71,6 +91,12 @@ def aracSonucunuStandartlastir(
     sonuc = basariliSonucDonusturucu(komutSonucu)
     _kontrolSonucunuDogrula(sonuc, kontrolKimligi, standartHedef)
     return sonuc
+
+
+def _nmapYetkiHatasiMi(standartHata: str) -> bool:
+    # Nmap ham paket taramalarinda gorulen bilinen yetki hatalarini tanir.
+    kucukHata = standartHata.casefold()
+    return any(ipucu in kucukHata for ipucu in NMAP_YETKI_HATASI_IPUCLARI)
 
 
 def zamanAsimiHatasiniStandartlastir(

@@ -1,13 +1,17 @@
 # VulnVerifier komut satiri arayuzunu ve baslangic komutlarini saglar.
 
 import platform
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from typing import Annotated, Protocol, cast
+from typing import Annotated, Any, Protocol, cast
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
+from typer.core import TyperCommand, TyperGroup, TyperOption
 
 from vulnverifier import __version__
 from vulnverifier.checks.anonymous_cipher_runner import (
@@ -88,6 +92,13 @@ from vulnverifier.checks.port_service_runner import (
     NmapPortServisCalistirmaServisi,
     PortServisCalismaCiktisi,
 )
+from vulnverifier.checks.smb_security_discovery import (
+    KONTROL_KIMLIGI as SMB_GUVENLIK_KONTROL_KIMLIGI,
+)
+from vulnverifier.checks.smb_security_runner import (
+    NmapSmbGuvenlikCalistirmaServisi,
+    SmbGuvenlikCalismaCiktisi,
+)
 from vulnverifier.checks.snmp_public_community import (
     KONTROL_KIMLIGI as SNMP_PUBLIC_KONTROL_KIMLIGI,
 )
@@ -107,6 +118,7 @@ from vulnverifier.checks.vmware_esxi_runner import (
 from vulnverifier.checks.vmware_esxi_version import (
     KONTROL_KIMLIGI as VMWARE_SURUM_KONTROL_KIMLIGI,
 )
+from vulnverifier.command_runner import aktifKomutlariSonlandir
 from vulnverifier.database import (
     VARSAYILAN_VERITABANI_YOLU,
     VeritabaniHatasi,
@@ -118,12 +130,13 @@ from vulnverifier.evidence_storage import (
     KanitDosyasiHatasi,
     KanitDosyasiOzeti,
     KanitManifestoMetadata,
+    evidenceDosyalariniAdlandir,
     hassasMetniMaskele,
     kanitManifestosunuKaydet,
 )
 from vulnverifier.execution_service import eksikAraciStandartlastir
 from vulnverifier.metasploit_adapter import MetasploitAdaptoru
-from vulnverifier.models import KontrolSonucu, ResultStatus
+from vulnverifier.models import CheckDefinition, KontrolSonucu, ResultStatus
 from vulnverifier.nmap_adapter import NmapAdaptoru
 from vulnverifier.persistence import (
     VARSAYILAN_PROJE_ADI,
@@ -131,12 +144,16 @@ from vulnverifier.persistence import (
 )
 from vulnverifier.port_validation import PortValidationError, portlariDogrula
 from vulnverifier.registry import varsayilanKatalog
+from vulnverifier.screenshot_renderer import (
+    ekranGoruntusunuDisaAktar,
+    ekranGoruntusuOlustur,
+)
 from vulnverifier.security_policy import (
     GuvenlikPolitikasiHatasi,
     eszamanliKontroluSinirla,
     guvenlikPolitikasiniDogrula,
 )
-from vulnverifier.target_validation import TargetValidationError, hedefiDogrula
+from vulnverifier.target_input import HedefGirdisiHatasi, hedefleriHazirla
 from vulnverifier.testssl_adapter import TestsslAdaptoru, testsslAraciniKontrolEt
 from vulnverifier.tool_availability import araciKontrolEt
 from vulnverifier.tool_management import (
@@ -168,7 +185,8 @@ ayrıca [bold]--confirm-intrusive[/bold] gerektirir.
 Bir komut hakkında ayrıntılı bilgi: [bold]vulnverifier KOMUT --help[/bold]
 """
 LISTE_YARDIM_SONU = """
-Her kontrol için kontrol kimliği, başlık, risk seviyesi ve gerekli harici araçlar gösterilir.
+Her kontrol için kontrol kimliği, başlık, varsayılan port, risk seviyesi ve gerekli
+harici araçlar gösterilir.
 Kontrol kimliği [bold]verify[/bold] komutunun ilk argümanı olarak kullanılır.
 
 [bold]Örnek[/bold]
@@ -193,22 +211,58 @@ gösterir ve foreign key desteğini kontrol eder.
   vulnverifier database-check --database ./data/vulnverifier.db
 """
 GECMIS_YARDIM_SONU = """
+Tüm sonuçlar burada tutulur: zafiyet, temiz, keşif, belirsiz, atlanan ve hatalı
+çalışmalar. [bold]--database[/bold] verilmezse [bold]./vulnverifier.db[/bold] kullanılır.
+
 [bold]Örnekler[/bold]
   vulnverifier history
   vulnverifier history --project musteri-a --limit 20 --database ./data/vulnverifier.db
 """
 BULGULAR_YARDIM_SONU = """
 Aynı bulguyu doğrulayan farklı yöntemler ortak bulgu anahtarı üzerinden ilişkilendirilir.
+Yalnızca [bold]VULNERABLE[/bold] ve [bold]POTENTIALLY_VULNERABLE[/bold] sonuçları burada
+gösterilir. Temiz, keşif, belirsiz, atlanan ve hatalı sonuçlar için
+[bold]vulnverifier history[/bold] kullanılır. [bold]--database[/bold] verilmezse
+[bold]./vulnverifier.db[/bold] kullanılır.
 
 [bold]Örnekler[/bold]
   vulnverifier findings
   vulnverifier findings --project musteri-a --limit 20
 """
-DOGRULAMA_YARDIM_SONU = """
-Kontrol kimliklerini görmek için: [bold]vulnverifier list[/bold]
+
+
+def _kontrolYardimListesiniOlustur() -> str:
+    # Verify yardiminda guncel katalogu tek kaynaktan okunabilir bicimde gosterir.
+    satirlar = ["[bold]Kullanılabilir kontrol kimlikleri[/bold]"]
+    for kontrolTanimi in varsayilanKatalog.kontrolleriListele():
+        varsayilanPortlar = ", ".join(str(port) for port in kontrolTanimi.varsayilanPortlar)
+        portMetni = varsayilanPortlar or "genel tarama veya --port"
+        aracMetni = ", ".join(kontrolTanimi.gerekliAraclar) or "harici araç yok"
+        riskMetni = kontrolTanimi.riskSeviyesi.value
+        if kontrolTanimi.riskSeviyesi.value == "intrusive":
+            riskMetni += " (--confirm-intrusive gerekli)"
+        satirlar.extend(
+            (
+                f"  [bold]{kontrolTanimi.kontrolKimligi}[/bold]",
+                f"    {kontrolTanimi.baslik}: {kontrolTanimi.aciklama}",
+                f"    Port: {portMetni} | Risk: {riskMetni} | Araç: {aracMetni}",
+            )
+        )
+    return "\n".join(satirlar)
+
+
+DOGRULAMA_YARDIM_SONU = f"""
+{_kontrolYardimListesiniOlustur()}
+
+Kontrol kimliğini [bold]verify[/bold] sonrasında aynen yazın. Kimliklerde alt çizgi değil,
+tire kullanılır. Daha kompakt tablo için: [bold]vulnverifier list[/bold]
+
+[bold]--target[/bold] veya [bold]--target-file[/bold] seçeneklerinden en az biri verilmelidir.
+Her ikisi birlikte verilirse hedefler birleştirilir ve tekrarlar kaldırılır.
 
 [bold]--allow-target[/bold] verilmezse yalnızca [bold]--target[/bold] değerinin kendisi örtük
-yetkili kapsam sayılır. Seçenek verilirse hedef IP, hostname veya CIDR kapsamlarından biriyle
+yetkili kapsam sayılır. Çoklu kullanımda listedeki her hedef ayrı ayrı yetkili kabul
+edilir. Seçenek verilirse hedef IP, hostname veya CIDR kapsamlarından biriyle
 eşleşmelidir. Intrusive kontroller ayrıca [bold]--confirm-intrusive[/bold] gerektirir. Port
 belirtilmezse kontrolün varsayılan portu veya tarama profili kullanılır.
 
@@ -228,6 +282,16 @@ belirtilmezse kontrolün varsayılan portu veya tarama profili kullanılır.
     --port 80 \\
     --port 443
 
+[bold]Çoklu hedef[/bold]
+  vulnverifier verify port-service-discovery \\
+    --target "10.0.100.0/24, 10.0.101.0/24" \\
+    --target-file ./targets.txt
+
+Çoklu hedeflerde varsayılan çıktı kesin [bold]VULNERABLE[/bold] bulguları ve bilgi
+amaçlı [bold]DISCOVERED[/bold] sonuçlarını gösterir. Diğer sonuçları da görmek için
+[bold]-v[/bold] veya [bold]--verbose[/bold] kullanılır. Paralellik [bold]--workers[/bold]
+ile 1-16 arasında ayarlanır; varsayılan değer 4'tür.
+
 [bold]Intrusive kontrol[/bold]
   vulnverifier verify dns-cache-snooping \\
     --target 192.0.2.53 \\
@@ -242,8 +306,14 @@ belirtilmezse kontrolün varsayılan portu veya tarama profili kullanılır.
     --database ./data/vulnverifier.db \\
     --evidence-dir ./data/evidence
 
+[bold]Ekran görüntüsü[/bold]
+  vulnverifier verify port-service-discovery \\
+    --target 127.0.0.1 \\
+    --port 443 \\
+    --screenshot
+
 [bold]Çıkış kodları[/bold]
-   0  Zafiyet doğrulanmadı.
+   0  Zafiyet doğrulanmadı veya keşif tamamlandı.
   10  Zafiyet veya potansiyel zafiyet tespit edildi.
   20  Sonuç kesinleştirilemedi.
   30  Kontrol atlandı.
@@ -251,21 +321,53 @@ belirtilmezse kontrolün varsayılan portu veya tarama profili kullanılır.
    2  Girdi veya güvenlik politikası nedeniyle işlem reddedildi.
 """
 
+
+def _yardimSeceneginiTurkcelestir(yardimSecenegi: TyperOption | None) -> TyperOption | None:
+    # Typer tarafindan otomatik eklenen yardim seceneginin metnini Turkcelestirir.
+    if yardimSecenegi is not None:
+        yardimSecenegi.help = "Bu yardım metnini gösterir ve çıkar."
+    return yardimSecenegi
+
+
+class TurkceYardimKomutu(TyperCommand):
+    # Alt komutlarda otomatik --help aciklamasini Turkce gosterir.
+    def get_help_option(self, context: Any) -> TyperOption | None:
+        return _yardimSeceneginiTurkcelestir(super().get_help_option(context))
+
+
+class TurkceYardimGrubu(TyperGroup):
+    # Ana komutta otomatik --help aciklamasini Turkce gosterir.
+    def get_help_option(self, context: Any) -> TyperOption | None:
+        return _yardimSeceneginiTurkcelestir(super().get_help_option(context))
+
+
 uygulama = typer.Typer(
+    cls=TurkceYardimGrubu,
     add_completion=False,
     help=ANA_YARDIM_METNI,
     epilog=ANA_YARDIM_SONU,
     invoke_without_command=True,
-    no_args_is_help=True,
+    no_args_is_help=False,
     rich_markup_mode="rich",
 )
 konsol = Console()
 VARSAYILAN_KANIT_ANA_DIZINI = Path("evidence")
+VARSAYILAN_EKRAN_GORUNTUSU_DIZINI = Path("screenshots")
 CIKIS_KODU_TEMIZ = 0
 CIKIS_KODU_ZAFIYET = 10
 CIKIS_KODU_BELIRSIZ = 20
 CIKIS_KODU_ATLANDI = 30
 CIKIS_KODU_HATA = 40
+VARSAYILAN_IS_PARACIGI_SAYISI = 4
+AZAMI_IS_PARACIGI_SAYISI = 16
+KARSILAMA_BASLIGI = "\n".join(
+    (
+        "__   ___   _ _    _  ___   _____ ___ ___ ___ ___ ___ ___",
+        "\\ \\ / / | | | |  | \\| \\ \\ / / __| _ \\_ _| __|_ _| __| _ \\",
+        " \\ V /| |_| | |__| .` |\\ V /| _||   /| || _| | || _||   /",
+        "  \\_/  \\___/|____|_|\\_| \\_/ |___|_|_\\___|_| |___|___|_|_\\",
+    )
+)
 
 
 class CalismaCiktisiProtokolu(Protocol):
@@ -273,12 +375,14 @@ class CalismaCiktisiProtokolu(Protocol):
     kontrolSonucu: KontrolSonucu
     kanitKlasoru: Path
     hamCiktiDosyalari: HamCiktiDosyalari | None
+    normalizeKanitYolu: Path
     kanitDosyasiOzetleri: tuple[KanitDosyasiOzeti, ...]
 
 
 # Kullanilabilir dogrulama kontrollerini listeler.
 @uygulama.command(
     "list",
+    cls=TurkceYardimKomutu,
     help="Kullanılabilir doğrulama kontrollerini listeler.",
     epilog=LISTE_YARDIM_SONU,
 )
@@ -290,15 +394,16 @@ def kontrolleriListele() -> None:
 
     tablo = Table(title="Kayıtlı doğrulama kontrolleri", show_lines=True)
     tablo.add_column("Kontrol kimliği", min_width=25)
-    tablo.add_column("Başlık", max_width=30)
+    tablo.add_column("Başlık / varsayılan port", max_width=30)
     tablo.add_column("Risk")
     tablo.add_column("Araçlar")
 
     for kontrolTanimi in kayitliKontroller:
+        varsayilanPortlar = ", ".join(str(port) for port in kontrolTanimi.varsayilanPortlar)
         gerekliAraclar = ", ".join(kontrolTanimi.gerekliAraclar) or "-"
         tablo.add_row(
             kontrolTanimi.kontrolKimligi,
-            kontrolTanimi.baslik,
+            f"{kontrolTanimi.baslik}\nPort: {varsayilanPortlar or 'genel / --port'}",
             kontrolTanimi.riskSeviyesi.value,
             gerekliAraclar,
         )
@@ -309,6 +414,7 @@ def kontrolleriListele() -> None:
 # Calisma ortamini ve planlanan harici araclari kontrol eder.
 @uygulama.command(
     "doctor",
+    cls=TurkceYardimKomutu,
     help="Çalışma ortamını ve harici araçları kontrol eder.",
     epilog=DOCTOR_YARDIM_SONU,
 )
@@ -346,6 +452,7 @@ def ortamKontrolu() -> None:
 # SQLite dosyasini olusturur ve temel baglanti ayarlarini dogrular.
 @uygulama.command(
     "database-check",
+    cls=TurkceYardimKomutu,
     help="SQLite veritabanı bağlantısını ve şemasını kontrol eder.",
     epilog=VERITABANI_YARDIM_SONU,
 )
@@ -378,6 +485,7 @@ def veritabaniKontrolu(
 # SQLite icindeki en yeni dogrulama calismalarini listeler.
 @uygulama.command(
     "history",
+    cls=TurkceYardimKomutu,
     help="SQLite veritabanına kaydedilmiş doğrulama çalışmalarını listeler.",
     epilog=GECMIS_YARDIM_SONU,
 )
@@ -391,13 +499,12 @@ def taramaGecmisiniListele(
         typer.Option("--limit", min=1, max=500, help="Gösterilecek azami kayıt sayısı."),
     ] = 50,
     veritabaniYolu: Annotated[
-        Path | None,
+        Path,
         typer.Option("--database", help="Kullanılacak SQLite dosyasının yolu."),
-    ] = None,
+    ] = VARSAYILAN_VERITABANI_YOLU,
 ) -> None:
-    etkinVeritabaniYolu = veritabaniYolu or VARSAYILAN_VERITABANI_YOLU
     try:
-        kayitlar = KaliciKayitDeposu(etkinVeritabaniYolu).taramaGecmisiniListele(
+        kayitlar = KaliciKayitDeposu(veritabaniYolu).taramaGecmisiniListele(
             projeAdi,
             sinir,
         )
@@ -433,6 +540,7 @@ def taramaGecmisiniListele(
 # Ortak bulgu anahtarina gore birlestirilmis son durumlari listeler.
 @uygulama.command(
     "findings",
+    cls=TurkceYardimKomutu,
     help="SQLite veritabanındaki birleştirilmiş bulguları listeler.",
     epilog=BULGULAR_YARDIM_SONU,
 )
@@ -446,13 +554,12 @@ def bulgulariListele(
         typer.Option("--limit", min=1, max=500, help="Gösterilecek azami bulgu sayısı."),
     ] = 50,
     veritabaniYolu: Annotated[
-        Path | None,
+        Path,
         typer.Option("--database", help="Kullanılacak SQLite dosyasının yolu."),
-    ] = None,
+    ] = VARSAYILAN_VERITABANI_YOLU,
 ) -> None:
-    etkinVeritabaniYolu = veritabaniYolu or VARSAYILAN_VERITABANI_YOLU
     try:
-        bulgular = KaliciKayitDeposu(etkinVeritabaniYolu).bulgulariListele(projeAdi, sinir)
+        bulgular = KaliciKayitDeposu(veritabaniYolu).bulgulariListele(projeAdi, sinir)
     except VeritabaniHatasi as hata:
         konsol.print(f"[red]Veritabanı hatası: {hata}[/red]")
         raise typer.Exit(code=1) from hata
@@ -483,6 +590,7 @@ def bulgulariListele(
 # Secilen kontrolu gercek motoruyla calistirir ve standart sonucu gosterir.
 @uygulama.command(
     "verify",
+    cls=TurkceYardimKomutu,
     help="Seçilen doğrulama kontrolünü yetkili hedefte çalıştırır.",
     epilog=DOGRULAMA_YARDIM_SONU,
 )
@@ -490,12 +598,29 @@ def bulgulariListele(
 def dogrula(
     kontrolKimligi: Annotated[
         str,
-        typer.Argument(help="Çalıştırılacak kontrol kimliği; seçenekleri görmek için `list`."),
+        typer.Argument(
+            metavar="KONTROL_KIMLIGI",
+            help="Çalıştırılacak kontrol kimliği; geçerli kimlikler aşağıda listelenir.",
+        ),
     ],
     hedef: Annotated[
-        str,
-        typer.Option("--target", "-t", help="Doğrulanacak IP adresi veya hostname."),
-    ],
+        str | None,
+        typer.Option(
+            "--target",
+            "-t",
+            help="Doğrulanacak IP, hostname, CIDR veya virgülle ayrılmış hedefler.",
+        ),
+    ] = None,
+    hedefDosyasi: Annotated[
+        Path | None,
+        typer.Option(
+            "--target-file",
+            help=(
+                "Her satırda IP, hostname veya CIDR bulunan UTF-8 hedef dosyası; "
+                "boş satırlar ve # yorumları atlanır."
+            ),
+        ),
+    ] = None,
     portlar: Annotated[
         list[str] | None,
         typer.Option(
@@ -509,9 +634,9 @@ def dogrula(
         typer.Option("--project", help="SQLite kayıtlarının ilişkilendirileceği proje adı."),
     ] = VARSAYILAN_PROJE_ADI,
     veritabaniYolu: Annotated[
-        Path | None,
+        Path,
         typer.Option("--database", help="Kullanılacak SQLite veritabanının yolu."),
-    ] = None,
+    ] = VARSAYILAN_VERITABANI_YOLU,
     evidenceDizini: Annotated[
         Path | None,
         typer.Option("--evidence-dir", help="Evidence dosyalarının yazılacağı ana dizin."),
@@ -520,7 +645,10 @@ def dogrula(
         list[str] | None,
         typer.Option(
             "--allow-target",
-            help="İsteğe bağlı yetkili IP, hostname veya CIDR; verilirse hedefi kapsamalıdır.",
+            help=(
+                "İsteğe bağlı yetkili IP, hostname veya CIDR; birden fazla kapsam "
+                "için tekrarlanabilir."
+            ),
         ),
     ] = None,
     intrusiveOnayi: Annotated[
@@ -530,10 +658,44 @@ def dogrula(
             help="Intrusive kontrolün yetkili kapsamda çalıştırılmasını onaylar.",
         ),
     ] = False,
+    ayrintiliCikti: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            "-v",
+            help="Çoklu hedeflerde kesin bulgularla birlikte tüm sonuçları gösterir.",
+        ),
+    ] = False,
+    ekranGoruntusu: Annotated[
+        bool,
+        typer.Option(
+            "--screenshot",
+            help="Sonucu ./screenshots klasörüne standart PNG olarak kaydeder.",
+        ),
+    ] = False,
+    ekranGoruntusuDizini: Annotated[
+        Path | None,
+        typer.Option(
+            "--screenshot-dir",
+            help=(
+                "PNG ekran görüntüsünün yazılacağı dizin; bu seçenek tek başına "
+                "ekran görüntüsünü etkinleştirir."
+            ),
+        ),
+    ] = None,
+    isParcacigiSayisi: Annotated[
+        int,
+        typer.Option(
+            "--workers",
+            min=1,
+            max=AZAMI_IS_PARACIGI_SAYISI,
+            help="Çoklu hedeflerde eşzamanlı çalışacak azami kontrol sayısı.",
+        ),
+    ] = VARSAYILAN_IS_PARACIGI_SAYISI,
 ) -> None:
     try:
-        standartHedef = hedefiDogrula(hedef)
-    except TargetValidationError as hata:
+        standartHedefler = hedefleriHazirla(hedef, hedefDosyasi)
+    except HedefGirdisiHatasi as hata:
         konsol.print(f"[red]Geçersiz hedef: {hata}[/red]")
         raise typer.Exit(code=2) from hata
 
@@ -549,180 +711,61 @@ def dogrula(
             f"[red]Kontrol kayıtlı değil: {kontrolKimligi}[/red]",
         )
         raise typer.Exit(code=1)
+    standartHedef = standartHedefler[0]
 
     konsol.print(
         "[yellow]Uyarı: VulnVerifier yalnızca açıkça yetkilendirilmiş "
         "hedeflerde kullanılmalıdır.[/yellow]"
     )
-    try:
-        guvenlikPolitikasiniDogrula(
-            kontrolTanimi,
-            standartHedef,
-            izinliHedefler,
-            intrusiveOnayi,
-        )
-    except GuvenlikPolitikasiHatasi as hata:
-        konsol.print(f"[red]Güvenlik politikası: {hata}[/red]")
-        raise typer.Exit(code=2) from hata
+    for guvenlikHedefi in standartHedefler:
+        try:
+            guvenlikPolitikasiniDogrula(
+                kontrolTanimi,
+                guvenlikHedefi,
+                izinliHedefler,
+                intrusiveOnayi,
+            )
+        except GuvenlikPolitikasiHatasi as hata:
+            konsol.print(f"[red]Güvenlik politikası: {hata}[/red]")
+            raise typer.Exit(code=2) from hata
 
     etkinKanitAnaDizini = evidenceDizini or VARSAYILAN_KANIT_ANA_DIZINI
 
-    if kontrolKimligi == KONTROL_KIMLIGI:
-        calismaCiktisi = _portServisKontrolunuCalistir(
-            standartHedef, standartPortlar, etkinKanitAnaDizini
-        )
-    elif kontrolKimligi == SSL_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: SSL protokol kontrolü tek seferde "
-                "yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _sslProtokolKontrolunuCalistir(
-            standartHedef, standartPortlar, etkinKanitAnaDizini
-        )
-    elif kontrolKimligi == HPE_ILO_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: HPE iLO kontrolü tek seferde "
-                "yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _hpeIloKontrolunuCalistir(
-            standartHedef, standartPortlar, etkinKanitAnaDizini
-        )
-    elif kontrolKimligi == ANONYMOUS_CIPHER_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: Anonymous cipher kontrolü tek seferde "
-                "yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _anonymousCipherKontrolunuCalistir(
-            standartHedef,
+    if len(standartHedefler) > 1:
+        _cokluKontroluCalistir(
+            kontrolKimligi,
+            standartHedefler,
             standartPortlar,
             etkinKanitAnaDizini,
+            veritabaniYolu,
+            projeAdi,
+            kontrolTanimi,
+            ayrintiliCikti,
+            ekranGoruntusu or ekranGoruntusuDizini is not None,
+            ekranGoruntusuDizini,
+            isParcacigiSayisi,
         )
-    elif kontrolKimligi == MS12020_METASPLOIT_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: MS12-020 Metasploit kontrolü tek seferde "
-                "yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _ms12020MetasploitKontrolunuCalistir(
-            standartHedef,
-            standartPortlar,
-            etkinKanitAnaDizini,
-        )
-    elif kontrolKimligi == SNMP_PUBLIC_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: SNMP kontrolü tek seferde yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _snmpPublicKontrolunuCalistir(
-            standartHedef,
-            standartPortlar,
-            etkinKanitAnaDizini,
-        )
-    elif kontrolKimligi == VMWARE_SURUM_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: VMware kontrolü tek seferde yalnızca "
-                "bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _vmwareSurumKontrolunuCalistir(
-            standartHedef,
-            standartPortlar,
-            etkinKanitAnaDizini,
-        )
-    elif kontrolKimligi == MS17010_METASPLOIT_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: MS17-010 doğrulaması yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _ms17010MetasploitDogrulamasiniCalistir(
-            standartHedef,
-            standartPortlar,
-            etkinKanitAnaDizini,
-        )
-    elif kontrolKimligi == DNS_CACHE_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: DNS cache doğrulaması yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _dnsCacheDogrulamasiniCalistir(
-            standartHedef, standartPortlar, etkinKanitAnaDizini
-        )
-    elif kontrolKimligi == MS17010_NMAP_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: MS17-010 Nmap doğrulaması yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _ms17010NmapDogrulamasiniCalistir(
-            standartHedef, standartPortlar, etkinKanitAnaDizini
-        )
-    elif kontrolKimligi == MS12020_NMAP_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: MS12-020 Nmap doğrulaması yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _ms12020NmapDogrulamasiniCalistir(
-            standartHedef, standartPortlar, etkinKanitAnaDizini
-        )
-    elif kontrolKimligi == IPMI_HASH_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: IPMI hash doğrulaması yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _ipmiHashDogrulamasiniCalistir(
-            standartHedef, standartPortlar, etkinKanitAnaDizini
-        )
-    elif kontrolKimligi == FREAK_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: FREAK doğrulaması yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _freakDogrulamasiniCalistir(
-            standartHedef, standartPortlar, etkinKanitAnaDizini
-        )
-    elif kontrolKimligi == CCS_INJECTION_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: CCS Injection doğrulaması yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _ccsInjectionDogrulamasiniCalistir(
-            standartHedef, standartPortlar, etkinKanitAnaDizini
-        )
-    elif kontrolKimligi == NTP_MODE6_KONTROL_KIMLIGI:
-        if len(standartPortlar) > 1:
-            konsol.print(
-                "[red]Geçersiz port: NTP Mode 6 doğrulaması yalnızca bir port kabul eder.[/red]"
-            )
-            raise typer.Exit(code=2)
-        calismaCiktisi = _ntpMode6DogrulamasiniCalistir(
-            standartHedef, standartPortlar, etkinKanitAnaDizini
-        )
-    else:
-        konsol.print(f"[yellow]Kontrol motoru henüz hazır değil: {kontrolKimligi}[/yellow]")
-        raise typer.Exit(code=1)
+    calismaCiktisi = _tekHedefKontrolunuCalistir(
+        kontrolKimligi,
+        standartHedef,
+        standartPortlar,
+        etkinKanitAnaDizini,
+    )
 
     try:
+        calismaCiktisi = _evidenceDosyaAdlariniTamamla(calismaCiktisi)
+        if ekranGoruntusu or ekranGoruntusuDizini is not None:
+            calismaCiktisi = _ekranGoruntusunuTamamla(
+                calismaCiktisi,
+                kontrolTanimi,
+                ekranGoruntusuDizini,
+            )
         calismaCiktisi = _evidenceManifestosunuTamamla(calismaCiktisi, kontrolTanimi.gerekliAraclar)
     except KanitDosyasiHatasi as hata:
-        konsol.print(f"[red]Evidence manifestosu oluşturulamadı: {hata}[/red]")
+        konsol.print(f"[red]Evidence dosyaları oluşturulamadı: {hata}[/red]")
         raise typer.Exit(code=CIKIS_KODU_HATA) from hata
     _kontrolSonucunuGoster(calismaCiktisi.kontrolSonucu, calismaCiktisi)
-    etkinVeritabaniYolu = veritabaniYolu or VARSAYILAN_VERITABANI_YOLU
+    etkinVeritabaniYolu = veritabaniYolu
     try:
         kayitOzeti = KaliciKayitDeposu(etkinVeritabaniYolu).dogrulamaKaydet(
             projeAdi,
@@ -736,9 +779,47 @@ def dogrula(
         raise typer.Exit(code=CIKIS_KODU_HATA) from hata
     konsol.print(
         f"[dim]SQLite kaydı: proje={projeAdi}, tarama={kayitOzeti.taramaKimligi}, "
-        f"bulgu={kayitOzeti.bulguKimligi}[/dim]"
+        f"bulgu={kayitOzeti.bulguKimligi or '-'}[/dim]"
     )
     raise typer.Exit(code=sonucCikisKodunuAl(calismaCiktisi.kontrolSonucu.durum))
+
+
+def _tekHedefKontrolunuCalistir(
+    kontrolKimligi: str,
+    hedef: str,
+    portlar: tuple[int, ...],
+    kanitAnaDizini: Path,
+) -> CalismaCiktisiProtokolu:
+    # Kayitli kontrol motorunu tek hedef icin ortak arayuz uzerinden calistirir.
+    if kontrolKimligi != KONTROL_KIMLIGI and len(portlar) > 1:
+        konsol.print(
+            f"[red]Geçersiz port: {kontrolKimligi} tek seferde yalnızca bir port kabul eder.[/red]"
+        )
+        raise typer.Exit(code=2)
+
+    calistiricilar = {
+        KONTROL_KIMLIGI: _portServisKontrolunuCalistir,
+        SSL_KONTROL_KIMLIGI: _sslProtokolKontrolunuCalistir,
+        HPE_ILO_KONTROL_KIMLIGI: _hpeIloKontrolunuCalistir,
+        ANONYMOUS_CIPHER_KONTROL_KIMLIGI: _anonymousCipherKontrolunuCalistir,
+        MS12020_METASPLOIT_KONTROL_KIMLIGI: _ms12020MetasploitKontrolunuCalistir,
+        SNMP_PUBLIC_KONTROL_KIMLIGI: _snmpPublicKontrolunuCalistir,
+        VMWARE_SURUM_KONTROL_KIMLIGI: _vmwareSurumKontrolunuCalistir,
+        MS17010_METASPLOIT_KONTROL_KIMLIGI: _ms17010MetasploitDogrulamasiniCalistir,
+        DNS_CACHE_KONTROL_KIMLIGI: _dnsCacheDogrulamasiniCalistir,
+        MS17010_NMAP_KONTROL_KIMLIGI: _ms17010NmapDogrulamasiniCalistir,
+        MS12020_NMAP_KONTROL_KIMLIGI: _ms12020NmapDogrulamasiniCalistir,
+        IPMI_HASH_KONTROL_KIMLIGI: _ipmiHashDogrulamasiniCalistir,
+        FREAK_KONTROL_KIMLIGI: _freakDogrulamasiniCalistir,
+        CCS_INJECTION_KONTROL_KIMLIGI: _ccsInjectionDogrulamasiniCalistir,
+        NTP_MODE6_KONTROL_KIMLIGI: _ntpMode6DogrulamasiniCalistir,
+        SMB_GUVENLIK_KONTROL_KIMLIGI: _smbGuvenlikKesfiniCalistir,
+    }
+    calistirici = calistiricilar.get(kontrolKimligi)
+    if calistirici is None:
+        konsol.print(f"[yellow]Kontrol motoru henüz hazır değil: {kontrolKimligi}[/yellow]")
+        raise typer.Exit(code=1)
+    return calistirici(hedef, portlar, kanitAnaDizini)
 
 
 def _portServisKontrolunuCalistir(
@@ -985,6 +1066,275 @@ def _ntpMode6DogrulamasiniCalistir(
     ).calistir(hedef, portlar)
 
 
+def _smbGuvenlikKesfiniCalistir(
+    hedef: str, portlar: tuple[int, ...], kanitAnaDizini: Path
+) -> SmbGuvenlikCalismaCiktisi:
+    # Nmap bulunabilirligini denetleyip SMB guvenlik kesfini yurutur.
+    aracDurumu = araciKontrolEt("nmap")
+    if not aracDurumu.bulunduMu or aracDurumu.aracYolu is None:
+        sonuc = eksikAraciStandartlastir(SMB_GUVENLIK_KONTROL_KIMLIGI, hedef, aracDurumu)
+        _kontrolSonucunuGoster(sonuc)
+        raise typer.Exit(code=sonucCikisKodunuAl(sonuc.durum))
+    return NmapSmbGuvenlikCalistirmaServisi(
+        NmapAdaptoru(aracDurumu.aracYolu), kanitAnaDizini
+    ).calistir(hedef, portlar)
+
+
+def _cokluKontroluCalistir(
+    kontrolKimligi: str,
+    hedefler: tuple[str, ...],
+    portlar: tuple[int, ...],
+    kanitAnaDizini: Path,
+    veritabaniYolu: Path,
+    projeAdi: str,
+    kontrolTanimi: CheckDefinition,
+    ayrintiliCikti: bool = False,
+    ekranGoruntusu: bool = False,
+    ekranGoruntusuDizini: Path | None = None,
+    isParcacigiSayisi: int = VARSAYILAN_IS_PARACIGI_SAYISI,
+) -> None:
+    # Hedefleri sinirli paralellikle tarar, sirali kaydeder ve birlesik ozet gosterir.
+    kayitDeposu = KaliciKayitDeposu(veritabaniYolu)
+    try:
+        kayitDeposu.hazirla()
+        calisanSayisi = min(isParcacigiSayisi, len(hedefler))
+        isParcacigiHavuzu = ThreadPoolExecutor(max_workers=calisanSayisi)
+        try:
+            tumCiktilar = tuple(
+                isParcacigiHavuzu.map(
+                    lambda hedef: _cokluHedefCiktisiniHazirla(
+                        kontrolKimligi,
+                        hedef,
+                        portlar,
+                        kanitAnaDizini,
+                        kontrolTanimi,
+                        ayrintiliCikti,
+                        ekranGoruntusu,
+                        ekranGoruntusuDizini,
+                    ),
+                    hedefler,
+                )
+            )
+        except BaseException:
+            aktifKomutlariSonlandir()
+            isParcacigiHavuzu.shutdown(wait=True, cancel_futures=True)
+            raise
+        else:
+            isParcacigiHavuzu.shutdown(wait=True)
+        for calismaCiktisi in tumCiktilar:
+            kayitDeposu.dogrulamaKaydet(
+                projeAdi,
+                kontrolTanimi,
+                calismaCiktisi.kontrolSonucu,
+                portlar,
+                calismaCiktisi.kanitDosyasiOzetleri,
+            )
+    except KanitDosyasiHatasi as hata:
+        konsol.print(f"[red]Evidence dosyaları oluşturulamadı: {hata}[/red]")
+        raise typer.Exit(code=CIKIS_KODU_HATA) from hata
+    except VeritabaniHatasi as hata:
+        konsol.print(f"[red]Doğrulama sonucu veritabanına kaydedilemedi: {hata}[/red]")
+        raise typer.Exit(code=CIKIS_KODU_HATA) from hata
+
+    varsayilanGosterilecekDurumlar = {
+        ResultStatus.VULNERABLE,
+        ResultStatus.DISCOVERED,
+    }
+    gosterilecekCiktilar = (
+        tumCiktilar
+        if ayrintiliCikti
+        else tuple(
+            cikti
+            for cikti in tumCiktilar
+            if cikti.kontrolSonucu.durum in varsayilanGosterilecekDurumlar
+        )
+    )
+    if not gosterilecekCiktilar:
+        konsol.print("[yellow]Kesin doğrulanmış bulgu veya keşif bulunamadı.[/yellow]")
+    elif kontrolKimligi == SMB_GUVENLIK_KONTROL_KIMLIGI:
+        _cokluSmbSonuclariniGoster(gosterilecekCiktilar)
+    else:
+        _cokluKontrolSonuclariniGoster(gosterilecekCiktilar)
+    _taramaOzetiniGoster(tumCiktilar)
+    konsol.print(
+        f"[dim]SQLite kayıtları: proje={projeAdi}, hedef={len(tumCiktilar)}, "
+        f"veritabanı={veritabaniYolu}[/dim]"
+    )
+    if ekranGoruntusu:
+        ciktiDizini = ekranGoruntusuDizini or VARSAYILAN_EKRAN_GORUNTUSU_DIZINI
+        ekranGoruntusuSayisi = sum(
+            ayrintiliCikti or cikti.kontrolSonucu.durum in varsayilanGosterilecekDurumlar
+            for cikti in tumCiktilar
+        )
+        konsol.print(f"[dim]Ekran görüntüleri: {ciktiDizini} ({ekranGoruntusuSayisi} dosya)[/dim]")
+    raise typer.Exit(code=_cokluSonucCikisKodunuAl(tumCiktilar))
+
+
+def _cokluHedefCiktisiniHazirla(
+    kontrolKimligi: str,
+    hedef: str,
+    portlar: tuple[int, ...],
+    kanitAnaDizini: Path,
+    kontrolTanimi: CheckDefinition,
+    ayrintiliCikti: bool,
+    ekranGoruntusu: bool,
+    ekranGoruntusuDizini: Path | None,
+) -> CalismaCiktisiProtokolu:
+    # Tek hedefi tarar ve veritabani yazimi disindaki evidence islemlerini tamamlar.
+    calismaCiktisi = _tekHedefKontrolunuCalistir(
+        kontrolKimligi,
+        hedef,
+        portlar,
+        kanitAnaDizini,
+    )
+    calismaCiktisi = _evidenceDosyaAdlariniTamamla(calismaCiktisi)
+    ekranGoruntusuDurumlari = {ResultStatus.VULNERABLE, ResultStatus.DISCOVERED}
+    if ekranGoruntusu and (
+        ayrintiliCikti or calismaCiktisi.kontrolSonucu.durum in ekranGoruntusuDurumlari
+    ):
+        calismaCiktisi = _ekranGoruntusunuTamamla(
+            calismaCiktisi,
+            kontrolTanimi,
+            ekranGoruntusuDizini,
+            False,
+        )
+    return _evidenceManifestosunuTamamla(calismaCiktisi, kontrolTanimi.gerekliAraclar)
+
+
+def _taramaOzetiniGoster(ciktilar: tuple[CalismaCiktisiProtokolu, ...]) -> None:
+    # Tum sonuclari durum gruplarina ayirip gizlenen kayitlari da sayisal olarak bildirir.
+    durumlar = tuple(cikti.kontrolSonucu.durum for cikti in ciktilar)
+    kesinBulguSayisi = durumlar.count(ResultStatus.VULNERABLE)
+    temizSayisi = durumlar.count(ResultStatus.NOT_VULNERABLE)
+    kesifSayisi = durumlar.count(ResultStatus.DISCOVERED)
+    bulunamayanSayisi = durumlar.count(ResultStatus.NOT_FOUND)
+    belirsizSayisi = sum(
+        durum in {ResultStatus.POTENTIALLY_VULNERABLE, ResultStatus.INCONCLUSIVE}
+        for durum in durumlar
+    )
+    hataSayisi = sum(durum in {ResultStatus.SKIPPED, ResultStatus.ERROR} for durum in durumlar)
+    konsol.print(
+        "[bold]Tarama özeti:[/bold] "
+        f"taranan={len(ciktilar)}, kesin bulgu={kesinBulguSayisi}, "
+        f"keşif={kesifSayisi}, bulunamadı={bulunamayanSayisi}, temiz={temizSayisi}, "
+        f"belirsiz={belirsizSayisi}, hata/atlanan={hataSayisi}"
+    )
+
+
+def _cokluKontrolSonuclariniGoster(
+    ciktilar: tuple[CalismaCiktisiProtokolu, ...],
+) -> None:
+    # Kontrol bagimsiz coklu hedef sonuclarini tek ozet tabloda gosterir.
+    durumRenkleri = {
+        ResultStatus.VULNERABLE: "red",
+        ResultStatus.NOT_VULNERABLE: "green",
+        ResultStatus.POTENTIALLY_VULNERABLE: "yellow",
+        ResultStatus.INCONCLUSIVE: "yellow",
+        ResultStatus.SKIPPED: "cyan",
+        ResultStatus.ERROR: "red",
+        ResultStatus.DISCOVERED: "blue",
+        ResultStatus.NOT_FOUND: "cyan",
+    }
+    tablo = Table(title="Çoklu hedef doğrulama özeti", show_lines=True)
+    tablo.add_column("Hedef", no_wrap=True)
+    tablo.add_column("Durum", no_wrap=True)
+    tablo.add_column("Özet", overflow="fold")
+    tablo.add_column("Süre", no_wrap=True)
+    for cikti in ciktilar:
+        sonuc = cikti.kontrolSonucu
+        sure = f"{sonuc.calismaSuresiSaniye:.3f} sn" if sonuc.calismaSuresiSaniye else "-"
+        tablo.add_row(
+            hassasMetniMaskele(sonuc.hedef),
+            f"[{durumRenkleri[sonuc.durum]}]{sonuc.durum.value}[/]",
+            hassasMetniMaskele(sonuc.ozet),
+            sure,
+        )
+    konsol.print(tablo)
+    _cokluEvidenceKlasorleriniGoster(ciktilar)
+
+
+def _cokluSmbSonuclariniGoster(
+    ciktilar: tuple[CalismaCiktisiProtokolu, ...],
+) -> None:
+    # Coklu SMB sonuclarini ekran goruntusune uygun tek bir tabloda gosterir.
+    durumRenkleri = {
+        ResultStatus.VULNERABLE: "red",
+        ResultStatus.NOT_VULNERABLE: "green",
+        ResultStatus.POTENTIALLY_VULNERABLE: "yellow",
+        ResultStatus.INCONCLUSIVE: "yellow",
+        ResultStatus.SKIPPED: "cyan",
+        ResultStatus.ERROR: "red",
+        ResultStatus.DISCOVERED: "blue",
+        ResultStatus.NOT_FOUND: "cyan",
+    }
+    tablo = Table(title="SMB çoklu hedef özeti", show_lines=False)
+    tablo.add_column("IP", no_wrap=True)
+    tablo.add_column("Port", no_wrap=True)
+    tablo.add_column("Host")
+    tablo.add_column("OS", overflow="fold")
+    tablo.add_column("Domain")
+    tablo.add_column("Sign")
+    tablo.add_column("SMBv1")
+    tablo.add_column("Durum", no_wrap=True)
+    for cikti in ciktilar:
+        sonuc = cikti.kontrolSonucu
+        kanitlar = _kanitlariSozlugeCevir(sonuc)
+        tablo.add_row(
+            hassasMetniMaskele(sonuc.hedef),
+            kanitlar.get("port", "-"),
+            hassasMetniMaskele(kanitlar.get("bilgisayarAdi", "-")),
+            hassasMetniMaskele(kanitlar.get("isletimSistemi", "-")),
+            hassasMetniMaskele(kanitlar.get("domain", "-")),
+            _booleanGorunumunuOlustur(kanitlar.get("imzalamaZorunlu")),
+            _booleanGorunumunuOlustur(kanitlar.get("smbV1")),
+            f"[{durumRenkleri[sonuc.durum]}]{sonuc.durum.value}[/]",
+        )
+    konsol.print(tablo)
+
+    _cokluEvidenceKlasorleriniGoster(ciktilar)
+
+
+def _cokluEvidenceKlasorleriniGoster(
+    ciktilar: tuple[CalismaCiktisiProtokolu, ...],
+) -> None:
+    # Her hedefin ayri evidence klasorunu kompakt bir tabloda gosterir.
+    evidenceTablosu = Table(title="Hedef evidence klasörleri", show_lines=False)
+    evidenceTablosu.add_column("Hedef", no_wrap=True)
+    evidenceTablosu.add_column("Evidence klasörü", overflow="fold")
+    for cikti in ciktilar:
+        evidenceTablosu.add_row(
+            hassasMetniMaskele(cikti.kontrolSonucu.hedef),
+            hassasMetniMaskele(str(cikti.kanitKlasoru)),
+        )
+    konsol.print(evidenceTablosu)
+
+
+def _kanitlariSozlugeCevir(sonuc: KontrolSonucu) -> dict[str, str]:
+    # Tekil SMB kanitlarini ozet tablo icin anahtar deger yapisina cevirir.
+    return {kanit.anahtar: kanit.deger for kanit in sonuc.kanitlar}
+
+
+def _booleanGorunumunuOlustur(deger: str | None) -> str:
+    # Kanit boolean degerini NetExec benzeri buyuk harfli gorunume cevirir.
+    return {"true": "True", "false": "False", "unknown": "?"}.get(deger or "", "?")
+
+
+def _cokluSonucCikisKodunuAl(
+    ciktilar: tuple[CalismaCiktisiProtokolu, ...],
+) -> int:
+    # Coklu taramanin en onemli durumunu tek surec cikis koduna cevirir.
+    durumlar = {cikti.kontrolSonucu.durum for cikti in ciktilar}
+    if ResultStatus.ERROR in durumlar:
+        return CIKIS_KODU_HATA
+    if durumlar & {ResultStatus.VULNERABLE, ResultStatus.POTENTIALLY_VULNERABLE}:
+        return CIKIS_KODU_ZAFIYET
+    if ResultStatus.INCONCLUSIVE in durumlar:
+        return CIKIS_KODU_BELIRSIZ
+    if ResultStatus.SKIPPED in durumlar:
+        return CIKIS_KODU_ATLANDI
+    return CIKIS_KODU_TEMIZ
+
+
 def _evidenceManifestosunuTamamla[CalismaCiktisiT: CalismaCiktisiProtokolu](
     calismaCiktisi: CalismaCiktisiT,
     araclar: tuple[str, ...],
@@ -1020,6 +1370,60 @@ def _evidenceManifestosunuTamamla[CalismaCiktisiT: CalismaCiktisiProtokolu](
     )
 
 
+def _evidenceDosyaAdlariniTamamla[CalismaCiktisiT: CalismaCiktisiProtokolu](
+    calismaCiktisi: CalismaCiktisiT,
+) -> CalismaCiktisiT:
+    # Gecici evidence adlarini hedef, kontrol, durum ve zaman iceren adlara cevirir.
+    adlandirilmisDosyalar = evidenceDosyalariniAdlandir(
+        calismaCiktisi.kanitKlasoru,
+        calismaCiktisi.kontrolSonucu,
+        calismaCiktisi.hamCiktiDosyalari,
+        calismaCiktisi.normalizeKanitYolu,
+        calismaCiktisi.kanitDosyasiOzetleri,
+    )
+    return cast(
+        CalismaCiktisiT,
+        replace(
+            calismaCiktisi,
+            hamCiktiDosyalari=adlandirilmisDosyalar.hamCiktiDosyalari,
+            normalizeKanitYolu=adlandirilmisDosyalar.normalizeKanitYolu,
+            kanitDosyasiOzetleri=adlandirilmisDosyalar.kanitDosyasiOzetleri,
+        ),
+    )
+
+
+def _ekranGoruntusunuTamamla[CalismaCiktisiT: CalismaCiktisiProtokolu](
+    calismaCiktisi: CalismaCiktisiT,
+    kontrolTanimi: CheckDefinition,
+    ekranGoruntusuDizini: Path | None,
+    yoluGoster: bool = True,
+) -> CalismaCiktisiT:
+    # PNG kanitini evidence listesine ekler ve secilen cikti dizinine kopyalar.
+    ekranGoruntusuOzeti = ekranGoruntusuOlustur(
+        calismaCiktisi.kanitKlasoru,
+        kontrolTanimi,
+        calismaCiktisi.kontrolSonucu,
+    )
+    ciktiDizini = ekranGoruntusuDizini or VARSAYILAN_EKRAN_GORUNTUSU_DIZINI
+    disariAktarilanYol = ekranGoruntusunuDisaAktar(
+        ekranGoruntusuOzeti.dosyaYolu,
+        ciktiDizini,
+        calismaCiktisi.kanitKlasoru.name,
+    )
+    if yoluGoster:
+        konsol.print(f"[dim]Ekran görüntüsü: {disariAktarilanYol}[/dim]")
+    return cast(
+        CalismaCiktisiT,
+        replace(
+            calismaCiktisi,
+            kanitDosyasiOzetleri=(
+                *calismaCiktisi.kanitDosyasiOzetleri,
+                ekranGoruntusuOzeti,
+            ),
+        ),
+    )
+
+
 def _aracTurunuAl(aracAdi: str) -> AracTuru | None:
     # Katalogdaki arac adini merkezi arac turune donusturur.
     return {
@@ -1032,7 +1436,11 @@ def _aracTurunuAl(aracAdi: str) -> AracTuru | None:
 
 def sonucCikisKodunuAl(durum: ResultStatus) -> int:
     # Standart kontrol durumunu komut satiri cikis koduna donusturur.
-    if durum is ResultStatus.NOT_VULNERABLE:
+    if durum in {
+        ResultStatus.NOT_VULNERABLE,
+        ResultStatus.DISCOVERED,
+        ResultStatus.NOT_FOUND,
+    }:
         return CIKIS_KODU_TEMIZ
     if durum in (ResultStatus.VULNERABLE, ResultStatus.POTENTIALLY_VULNERABLE):
         return CIKIS_KODU_ZAFIYET
@@ -1061,6 +1469,7 @@ def _kontrolSonucunuGoster(
         | FreakCalismaCiktisi
         | CcsCalismaCiktisi
         | NtpMode6CalismaCiktisi
+        | SmbGuvenlikCalismaCiktisi
         | None
     ) = None,
 ) -> None:
@@ -1072,6 +1481,8 @@ def _kontrolSonucunuGoster(
         ResultStatus.INCONCLUSIVE: "yellow",
         ResultStatus.SKIPPED: "cyan",
         ResultStatus.ERROR: "red",
+        ResultStatus.DISCOVERED: "blue",
+        ResultStatus.NOT_FOUND: "cyan",
     }
     sonucTablosu = Table(title="Doğrulama sonucu")
     sonucTablosu.add_column("Alan")
@@ -1104,9 +1515,30 @@ def _kontrolSonucunuGoster(
         konsol.print(dosyaTablosu)
 
 
+def _karsilamaEkraniniGoster() -> None:
+    # Parametresiz calistirmada kisa urun tanitimini ve yonlendirmeleri gosterir.
+    icerik = Text(justify="center")
+    icerik.append(KARSILAMA_BASLIGI, style="bold #ff8c1a")
+    icerik.append("\n\nKanıt odaklı zafiyet doğrulama aracı", style="bold")
+    icerik.append(
+        "\nYetkili hedeflerde ağ ve güvenlik kontrollerini çalıştırır; "
+        "sonuçları evidence dosyalarına ve SQLite veritabanına kaydeder."
+    )
+    icerik.append(
+        f"\n\nSürüm: {__version__}  |  Kontrol sayısı: {len(varsayilanKatalog)}  |  Arayüz: CLI",
+        style="bold #c55a11",
+    )
+    icerik.append("\n\nKomutlar ve seçenekler: ", style="dim")
+    icerik.append("vulnverifier --help", style="bold cyan")
+    icerik.append("\nKontrol listesini göster: ", style="dim")
+    icerik.append("vulnverifier list", style="bold cyan")
+    konsol.print(Panel.fit(icerik, border_style="#ff9d1d", padding=(1, 2)))
+
+
 # VulnVerifier CLI komut grubunu baslatir.
 @uygulama.callback()
 def anaKomut(
+    context: typer.Context,
     surum: Annotated[
         bool,
         typer.Option("--version", help="Uygulama sürümünü gösterir.", is_eager=True),
@@ -1115,6 +1547,8 @@ def anaKomut(
     if surum:
         konsol.print(f"VulnVerifier {__version__}")
         raise typer.Exit()
+    if context.invoked_subcommand is None:
+        _karsilamaEkraniniGoster()
 
 
 def uygulamayiCalistir() -> None:

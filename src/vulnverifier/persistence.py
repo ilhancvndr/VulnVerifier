@@ -9,7 +9,7 @@ from pathlib import Path
 from vulnverifier.database import VeritabaniHatasi, veritabaniBaglantisi
 from vulnverifier.database_schema import semayiHazirla
 from vulnverifier.evidence_storage import KanitDosyasiOzeti
-from vulnverifier.models import CheckDefinition, KontrolSonucu
+from vulnverifier.models import CheckDefinition, KontrolSonucu, ResultStatus
 
 VARSAYILAN_PROJE_ADI = "default"
 AZAMI_PROJE_ADI_UZUNLUGU = 100
@@ -22,7 +22,7 @@ class DogrulamaKayitOzeti:
     projeKimligi: int
     hedefKimligi: int
     taramaKimligi: int
-    bulguKimligi: int
+    bulguKimligi: int | None
     kontrolSonucuKimligi: int
 
 
@@ -321,8 +321,15 @@ def _bulguyuGetirVeyaGuncelle(
     kontrolTanimi: CheckDefinition,
     kontrolSonucu: KontrolSonucu,
     bitisZamani: str,
-) -> int:
-    # Ortak bulgu anahtarini koruyarak son dogrulama durumunu gunceller.
+) -> int | None:
+    # Yalnizca gercek veya olasi zafiyet sonuclarini bulgu olarak gunceller.
+    bulguDurumlari = {
+        ResultStatus.VULNERABLE,
+        ResultStatus.POTENTIALLY_VULNERABLE,
+    }
+    if kontrolSonucu.durum not in bulguDurumlari:
+        return None
+
     baglanti.execute(
         """
         INSERT INTO bulgular (
@@ -385,7 +392,7 @@ def _taramaEkle(
 def _kontrolSonucuEkle(
     baglanti: sqlite3.Connection,
     taramaKimligi: int,
-    bulguKimligi: int,
+    bulguKimligi: int | None,
     kontrolSonucu: KontrolSonucu,
     baslangicZamani: str,
     bitisZamani: str,
@@ -453,11 +460,16 @@ def _evidenceDosyalariniEkle(
 
 
 def _evidenceTurunuAl(dosyaYolu: Path) -> str:
-    # Bilinen evidence dosya adlarini ortak tur degerlerine donusturur.
-    turler = {
-        "stdout.txt": "stdout",
-        "stderr.txt": "stderr",
-        "evidence.json": "normalized",
-        "manifest.json": "manifest",
-    }
-    return turler.get(dosyaYolu.name, "other")
+    # Eski ve aciklayici evidence dosya adlarini ortak tur degerlerine donusturur.
+    ad = dosyaYolu.name
+    turler = (
+        ("stdout.txt", "stdout"),
+        ("stderr.txt", "stderr"),
+        ("evidence.json", "normalized"),
+        ("manifest.json", "manifest"),
+        (".png", "screenshot"),
+    )
+    for sonek, evidenceTuru in turler:
+        if ad == sonek or ad.endswith(f"-{sonek}") or (sonek == ".png" and ad.endswith(sonek)):
+            return evidenceTuru
+    return "other"

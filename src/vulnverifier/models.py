@@ -9,6 +9,8 @@ class ResultStatus(StrEnum):
     # Bir dogrulama calismasinin standart sonuc durumlarini belirtir.
     VULNERABLE = "VULNERABLE"
     NOT_VULNERABLE = "NOT_VULNERABLE"
+    DISCOVERED = "DISCOVERED"
+    NOT_FOUND = "NOT_FOUND"
     POTENTIALLY_VULNERABLE = "POTENTIALLY_VULNERABLE"
     INCONCLUSIVE = "INCONCLUSIVE"
     SKIPPED = "SKIPPED"

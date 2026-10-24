@@ -115,7 +115,7 @@ def portServisTaramaSonucunuOlustur(
         return KontrolSonucu(
             kontrolKimligi=KONTROL_KIMLIGI,
             hedef=standartHedef,
-            durum=ResultStatus.VULNERABLE,
+            durum=ResultStatus.DISCOVERED,
             ozet=f"Açık TCP portları tespit edildi: {portMetni}.",
             kanitlar=kanitlar,
         )
@@ -129,7 +129,7 @@ def portServisTaramaSonucunuOlustur(
         return KontrolSonucu(
             kontrolKimligi=KONTROL_KIMLIGI,
             hedef=standartHedef,
-            durum=ResultStatus.NOT_VULNERABLE,
+            durum=ResultStatus.NOT_FOUND,
             ozet="Seçilen TCP portlarının tamamı kapalı.",
             kanitlar=kanitlar,
         )
@@ -159,7 +159,7 @@ def _portDurumunuDegerlendir(
         return KontrolSonucu(
             kontrolKimligi=KONTROL_KIMLIGI,
             hedef=hedef,
-            durum=ResultStatus.VULNERABLE,
+            durum=ResultStatus.DISCOVERED,
             ozet=f"{portTanimi} portu açık{servisMetni}.",
             kanitlar=kanitlar,
         )
@@ -168,7 +168,7 @@ def _portDurumunuDegerlendir(
         return KontrolSonucu(
             kontrolKimligi=KONTROL_KIMLIGI,
             hedef=hedef,
-            durum=ResultStatus.NOT_VULNERABLE,
+            durum=ResultStatus.NOT_FOUND,
             ozet=f"{portTanimi} portu kapalı.",
             kanitlar=kanitlar,
         )

@@ -5,7 +5,7 @@ from collections.abc import Sequence
 
 from vulnverifier.database import VeritabaniHatasi
 
-GUNCEL_SEMA_SURUMU = 1
+GUNCEL_SEMA_SURUMU = 2
 
 ILK_SEMA_SQL: tuple[str, ...] = (
     """
@@ -108,6 +108,159 @@ ILK_SEMA_SQL: tuple[str, ...] = (
     "CREATE INDEX idx_evidence_sonuc ON evidence_dosyalari(kontrol_sonucu_kimligi)",
 )
 
+IKINCI_SEMA_SQL: tuple[str, ...] = (
+    """
+    CREATE TABLE bulgular_v2 (
+        kimlik INTEGER PRIMARY KEY,
+        proje_kimligi INTEGER NOT NULL REFERENCES projeler(kimlik) ON DELETE CASCADE,
+        hedef_kimligi INTEGER NOT NULL REFERENCES hedefler(kimlik) ON DELETE CASCADE,
+        bulgu_anahtari TEXT NOT NULL,
+        baslik TEXT NOT NULL,
+        son_durum TEXT NOT NULL CHECK (
+            son_durum IN ('VULNERABLE', 'POTENTIALLY_VULNERABLE')
+        ),
+        ilk_gorulme_zamani TEXT NOT NULL,
+        son_gorulme_zamani TEXT NOT NULL,
+        UNIQUE (proje_kimligi, hedef_kimligi, bulgu_anahtari)
+    )
+    """,
+    """
+    INSERT INTO bulgular_v2 (
+        kimlik, proje_kimligi, hedef_kimligi, bulgu_anahtari, baslik,
+        son_durum, ilk_gorulme_zamani, son_gorulme_zamani
+    )
+    SELECT
+        b.kimlik, b.proje_kimligi, b.hedef_kimligi, b.bulgu_anahtari, b.baslik,
+        (
+            SELECT ks.durum
+            FROM kontrol_sonuclari AS ks
+            WHERE ks.bulgu_kimligi = b.kimlik
+              AND ks.kontrol_kimligi != 'port-service-discovery'
+              AND ks.durum IN ('VULNERABLE', 'POTENTIALLY_VULNERABLE')
+            ORDER BY ks.kimlik DESC
+            LIMIT 1
+        ),
+        COALESCE(
+            (
+                SELECT MIN(ks.baslangic_zamani)
+                FROM kontrol_sonuclari AS ks
+                WHERE ks.bulgu_kimligi = b.kimlik
+                  AND ks.kontrol_kimligi != 'port-service-discovery'
+                  AND ks.durum IN ('VULNERABLE', 'POTENTIALLY_VULNERABLE')
+            ),
+            b.ilk_gorulme_zamani
+        ),
+        COALESCE(
+            (
+                SELECT MAX(ks.bitis_zamani)
+                FROM kontrol_sonuclari AS ks
+                WHERE ks.bulgu_kimligi = b.kimlik
+                  AND ks.kontrol_kimligi != 'port-service-discovery'
+                  AND ks.durum IN ('VULNERABLE', 'POTENTIALLY_VULNERABLE')
+            ),
+            b.son_gorulme_zamani
+        )
+    FROM bulgular AS b
+    WHERE EXISTS (
+        SELECT 1
+        FROM kontrol_sonuclari AS ks
+        WHERE ks.bulgu_kimligi = b.kimlik
+          AND ks.kontrol_kimligi != 'port-service-discovery'
+          AND ks.durum IN ('VULNERABLE', 'POTENTIALLY_VULNERABLE')
+    )
+    """,
+    """
+    CREATE TABLE kontrol_sonuclari_v2 (
+        kimlik INTEGER PRIMARY KEY,
+        tarama_kimligi INTEGER NOT NULL
+            REFERENCES tarama_calismalari(kimlik) ON DELETE CASCADE,
+        bulgu_kimligi INTEGER REFERENCES bulgular_v2(kimlik) ON DELETE CASCADE,
+        kontrol_kimligi TEXT NOT NULL,
+        durum TEXT NOT NULL CHECK (
+            durum IN (
+                'VULNERABLE', 'NOT_VULNERABLE', 'POTENTIALLY_VULNERABLE',
+                'INCONCLUSIVE', 'SKIPPED', 'ERROR', 'DISCOVERED', 'NOT_FOUND'
+            )
+        ),
+        ozet TEXT NOT NULL,
+        calisma_suresi_saniye REAL,
+        baslangic_zamani TEXT NOT NULL,
+        bitis_zamani TEXT NOT NULL
+    )
+    """,
+    """
+    INSERT INTO kontrol_sonuclari_v2 (
+        kimlik, tarama_kimligi, bulgu_kimligi, kontrol_kimligi, durum, ozet,
+        calisma_suresi_saniye, baslangic_zamani, bitis_zamani
+    )
+    SELECT
+        ks.kimlik,
+        ks.tarama_kimligi,
+        CASE
+            WHEN ks.kontrol_kimligi != 'port-service-discovery'
+             AND ks.durum IN ('VULNERABLE', 'POTENTIALLY_VULNERABLE')
+             AND EXISTS (SELECT 1 FROM bulgular_v2 AS b WHERE b.kimlik = ks.bulgu_kimligi)
+            THEN ks.bulgu_kimligi
+            ELSE NULL
+        END,
+        ks.kontrol_kimligi,
+        CASE
+            WHEN ks.kontrol_kimligi = 'port-service-discovery'
+             AND ks.durum = 'VULNERABLE' THEN 'DISCOVERED'
+            WHEN ks.kontrol_kimligi = 'port-service-discovery'
+             AND ks.durum = 'NOT_VULNERABLE' THEN 'NOT_FOUND'
+            ELSE ks.durum
+        END,
+        ks.ozet,
+        ks.calisma_suresi_saniye,
+        ks.baslangic_zamani,
+        ks.bitis_zamani
+    FROM kontrol_sonuclari AS ks
+    """,
+    """
+    CREATE TABLE yapilandirilmis_kanitlar_v2 (
+        kimlik INTEGER PRIMARY KEY,
+        kontrol_sonucu_kimligi INTEGER NOT NULL
+            REFERENCES kontrol_sonuclari_v2(kimlik) ON DELETE CASCADE,
+        anahtar TEXT NOT NULL,
+        deger TEXT NOT NULL
+    )
+    """,
+    """
+    INSERT INTO yapilandirilmis_kanitlar_v2
+    SELECT * FROM yapilandirilmis_kanitlar
+    """,
+    """
+    CREATE TABLE evidence_dosyalari_v2 (
+        kimlik INTEGER PRIMARY KEY,
+        kontrol_sonucu_kimligi INTEGER NOT NULL
+            REFERENCES kontrol_sonuclari_v2(kimlik) ON DELETE CASCADE,
+        dosya_yolu TEXT NOT NULL,
+        sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+        dosya_turu TEXT NOT NULL,
+        UNIQUE (kontrol_sonucu_kimligi, dosya_yolu)
+    )
+    """,
+    """
+    INSERT INTO evidence_dosyalari_v2
+    SELECT * FROM evidence_dosyalari
+    """,
+    "DROP TABLE yapilandirilmis_kanitlar",
+    "DROP TABLE evidence_dosyalari",
+    "DROP TABLE kontrol_sonuclari",
+    "DROP TABLE bulgular",
+    "ALTER TABLE bulgular_v2 RENAME TO bulgular",
+    "ALTER TABLE kontrol_sonuclari_v2 RENAME TO kontrol_sonuclari",
+    "ALTER TABLE yapilandirilmis_kanitlar_v2 RENAME TO yapilandirilmis_kanitlar",
+    "ALTER TABLE evidence_dosyalari_v2 RENAME TO evidence_dosyalari",
+    "CREATE INDEX idx_bulgular_hedef ON bulgular(hedef_kimligi)",
+    "CREATE INDEX idx_bulgular_anahtar ON bulgular(bulgu_anahtari)",
+    "CREATE INDEX idx_sonuclar_tarama ON kontrol_sonuclari(tarama_kimligi)",
+    "CREATE INDEX idx_sonuclar_bulgu ON kontrol_sonuclari(bulgu_kimligi)",
+    "CREATE INDEX idx_kanitlar_sonuc ON yapilandirilmis_kanitlar(kontrol_sonucu_kimligi)",
+    "CREATE INDEX idx_evidence_sonuc ON evidence_dosyalari(kontrol_sonucu_kimligi)",
+)
+
 
 def semayiHazirla(baglanti: sqlite3.Connection) -> int:
     # Eksik migration adimlarini sirasiyla uygular ve guncel sema surumunu dondurur.
@@ -117,7 +270,10 @@ def semayiHazirla(baglanti: sqlite3.Connection) -> int:
             f"Veritabani semasi uygulamadan daha yeni: {mevcutSurum} > {GUNCEL_SEMA_SURUMU}",
         )
 
-    migrationlar: dict[int, Sequence[str]] = {1: ILK_SEMA_SQL}
+    migrationlar: dict[int, Sequence[str]] = {
+        1: ILK_SEMA_SQL,
+        2: IKINCI_SEMA_SQL,
+    }
     for surum in range(mevcutSurum + 1, GUNCEL_SEMA_SURUMU + 1):
         _migrationUygula(baglanti, surum, migrationlar[surum])
     return GUNCEL_SEMA_SURUMU

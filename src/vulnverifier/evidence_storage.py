@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from vulnverifier.artifact_naming import artifactDosyaAdiTemeliniOlustur
 from vulnverifier.command_runner import KomutSonucu
 from vulnverifier.models import KontrolSonucu
 
@@ -28,7 +29,6 @@ MASKELI_DEGER = "[MASKELENDI]"
 HASSAS_DEGER_DESENLERI = (
     re.compile(r"(?i)\b(password|passwd|pwd|token|api[_-]?key|secret)\b(\s*[:=]\s*)([^\s,;]+)"),
     re.compile(r"(?i)\b(authorization\s*:\s*(?:basic|bearer)\s+)([^\s]+)"),
-    re.compile(r"(?i)(hash\s+found\s*:\s*)([^\r\n]+)"),
 )
 
 
@@ -53,6 +53,14 @@ class KanitManifestoMetadata:
     aracAdi: str
     aracSurumu: str | None
     komutCikisKodu: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class AdlandirilmisKanitDosyalari:
+    # Yeni adlara tasinan ham ve normalize evidence yollarini birlikte tasir.
+    hamCiktiDosyalari: HamCiktiDosyalari | None
+    normalizeKanitYolu: Path
+    kanitDosyasiOzetleri: tuple[KanitDosyasiOzeti, ...]
 
 
 class KanitKlasoruHatasi(OSError):
@@ -148,6 +156,52 @@ def normalizeEdilmisKanitiKaydet(
     return dosyaYolu
 
 
+def evidenceDosyalariniAdlandir(
+    kanitKlasoru: str | Path,
+    kontrolSonucu: KontrolSonucu,
+    hamCiktiDosyalari: HamCiktiDosyalari | None,
+    normalizeKanitYolu: str | Path,
+    kanitDosyasiOzetleri: tuple[KanitDosyasiOzeti, ...],
+) -> AdlandirilmisKanitDosyalari:
+    # Gecici evidence adlarini sonuc bilgisi iceren ortak adlara guvenle tasir.
+    dogrulanmisKlasor = _kanitKlasorunuDogrula(kanitKlasoru)
+    normalizeYolu = _dosyaYolunuDogrula(normalizeKanitYolu)
+    dosyaAdiTemeli = artifactDosyaAdiTemeliniOlustur(kontrolSonucu)
+    tasimaPlani: list[tuple[Path, Path]] = [
+        (normalizeYolu, dogrulanmisKlasor / f"{dosyaAdiTemeli}-evidence.json")
+    ]
+    yeniHamDosyalar: HamCiktiDosyalari | None = None
+    if hamCiktiDosyalari is not None:
+        yeniStandartCiktiYolu = dogrulanmisKlasor / f"{dosyaAdiTemeli}-stdout.txt"
+        yeniStandartHataYolu = dogrulanmisKlasor / f"{dosyaAdiTemeli}-stderr.txt"
+        tasimaPlani.extend(
+            (
+                (hamCiktiDosyalari.standartCiktiYolu, yeniStandartCiktiYolu),
+                (hamCiktiDosyalari.standartHataYolu, yeniStandartHataYolu),
+            )
+        )
+        yeniHamDosyalar = HamCiktiDosyalari(
+            standartCiktiYolu=yeniStandartCiktiYolu,
+            standartHataYolu=yeniStandartHataYolu,
+            cikisKodu=hamCiktiDosyalari.cikisKodu,
+        )
+
+    _evidenceDosyalariniGuvenleTasi(dogrulanmisKlasor, tuple(tasimaPlani))
+    yolEslemeleri = {eskiYol: yeniYol for eskiYol, yeniYol in tasimaPlani}
+    yeniOzetler = tuple(
+        KanitDosyasiOzeti(
+            dosyaYolu=yolEslemeleri.get(dosyaOzeti.dosyaYolu, dosyaOzeti.dosyaYolu),
+            sha256=dosyaOzeti.sha256,
+        )
+        for dosyaOzeti in kanitDosyasiOzetleri
+    )
+    return AdlandirilmisKanitDosyalari(
+        hamCiktiDosyalari=yeniHamDosyalar,
+        normalizeKanitYolu=tasimaPlani[0][1],
+        kanitDosyasiOzetleri=yeniOzetler,
+    )
+
+
 def kanitManifestosunuKaydet(
     kanitKlasoru: str | Path,
     kontrolSonucu: KontrolSonucu,
@@ -191,7 +245,8 @@ def kanitManifestosunuKaydet(
         },
         "dosyalar": dosyaKayitlari,
     }
-    manifestoYolu = dogrulanmisKlasor / KANIT_MANIFESTO_DOSYA_ADI
+    dosyaAdiTemeli = artifactDosyaAdiTemeliniOlustur(kontrolSonucu)
+    manifestoYolu = dogrulanmisKlasor / f"{dosyaAdiTemeli}-{KANIT_MANIFESTO_DOSYA_ADI}"
     manifestoMetni = json.dumps(manifestoVerisi, ensure_ascii=False, indent=2) + "\n"
     try:
         _metinDosyasiniAtomikOlustur(manifestoYolu, manifestoMetni)
@@ -292,7 +347,7 @@ def _hamCiktiyiGuvenliHaleGetir(metin: str) -> str:
 
 
 def hassasMetniMaskele(metin: str) -> str:
-    # Bilinen parola, token, yetkilendirme ve hash kaliplarini guvenli degerle degistirir.
+    # Bilinen parola, token ve yetkilendirme kaliplarini guvenli degerle degistirir.
     maskeliMetin = metin
     for sira, desen in enumerate(HASSAS_DEGER_DESENLERI):
         if sira == 0:
@@ -305,6 +360,34 @@ def hassasMetniMaskele(metin: str) -> str:
 def _zamanDegeriniMetneDonustur(zamanDegeri: datetime | None) -> str | None:
     # Zaman degerini tasinabilir ISO 8601 metnine donusturur.
     return zamanDegeri.isoformat() if zamanDegeri is not None else None
+
+
+def _evidenceDosyalariniGuvenleTasi(
+    kanitKlasoru: Path,
+    tasimaPlani: tuple[tuple[Path, Path], ...],
+) -> None:
+    # Tum yeni baglantilari olusturmadan eski adlari silmeyerek kismi tasimayi engeller.
+    for kaynakYolu, hedefYolu in tasimaPlani:
+        dogrulanmisKaynak = _dosyaYolunuDogrula(kaynakYolu)
+        if dogrulanmisKaynak.parent.resolve() != kanitKlasoru.resolve():
+            raise KanitDosyasiHatasi("Yalnızca aynı çalışmanın evidence dosyaları taşınabilir.")
+        if dogrulanmisKaynak.is_symlink() or not dogrulanmisKaynak.is_file():
+            raise KanitDosyasiHatasi("Taşınacak evidence yolu normal bir dosya olmalıdır.")
+        if hedefYolu.exists() or hedefYolu.is_symlink():
+            raise KanitDosyasiHatasi(f"Evidence hedef dosyası zaten mevcut: {hedefYolu}")
+
+    olusturulanHedefler: list[Path] = []
+    try:
+        for kaynakYolu, hedefYolu in tasimaPlani:
+            os.link(kaynakYolu, hedefYolu, follow_symlinks=False)
+            olusturulanHedefler.append(hedefYolu)
+    except OSError as hata:
+        for hedefYolu in olusturulanHedefler:
+            hedefYolu.unlink(missing_ok=True)
+        raise KanitDosyasiHatasi("Evidence dosyaları açıklayıcı adlara taşınamadı.") from hata
+
+    for kaynakYolu, _ in tasimaPlani:
+        kaynakYolu.unlink()
 
 
 def _metinDosyasiniAtomikOlustur(dosyaYolu: Path, metin: str) -> None:

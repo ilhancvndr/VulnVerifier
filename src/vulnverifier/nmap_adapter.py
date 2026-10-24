@@ -23,6 +23,7 @@ VARSAYILAN_NTP_PORTU = 123
 NTP_BETIK_ZAMAN_ASIMI = "20s"
 VARSAYILAN_MS17010_PORTU = 445
 VARSAYILAN_MS12020_PORTU = 3389
+VARSAYILAN_SMB_PORTU = 445
 
 
 class NmapBulunamadiHatasi(RuntimeError):
@@ -393,6 +394,47 @@ class NmapAdaptoru:
         # MS12-020 Nmap komutunu merkezi komut calistiriciyla yurutur.
         return komutuCalistir(
             self.ms12020KomutuOlustur(hedef, port),
+            zamanAsimi=zamanAsimi,
+            iptalDenetimi=iptalDenetimi,
+        )
+
+    def smbGuvenlikKomutuOlustur(
+        self, hedef: str, port: str | int = VARSAYILAN_SMB_PORTU
+    ) -> tuple[str, ...]:
+        # SMB kimlik, protokol ve imzalama bilgilerini guvenli NSE betikleriyle toplar.
+        standartHedef = hedefiDogrula(hedef)
+        standartPort = portuDogrula(port)
+        komutParcalari = [self._aracYolu]
+        if _ipv6Mi(standartHedef):
+            komutParcalari.append("-6")
+        komutParcalari.extend(
+            [
+                "-sT",
+                "-sV",
+                "-Pn",
+                "-n",
+                "--noninteractive",
+                "--script",
+                "smb-os-discovery,smb-protocols,smb2-security-mode",
+                "-oX",
+                "-",
+                "-p",
+                str(standartPort),
+                standartHedef,
+            ]
+        )
+        return tuple(komutParcalari)
+
+    def smbGuvenlikTaramasiCalistir(
+        self,
+        hedef: str,
+        port: str | int = VARSAYILAN_SMB_PORTU,
+        zamanAsimi: float | int = NMAP_VARSAYILAN_ZAMAN_ASIMI,
+        iptalDenetimi: KomutIptalDenetimi | None = None,
+    ) -> KomutSonucu:
+        # SMB guvenlik kesfi komutunu merkezi komut calistiriciyla yurutur.
+        return komutuCalistir(
+            self.smbGuvenlikKomutuOlustur(hedef, port),
             zamanAsimi=zamanAsimi,
             iptalDenetimi=iptalDenetimi,
         )

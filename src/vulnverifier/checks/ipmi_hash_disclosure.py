@@ -1,7 +1,5 @@
 # IPMI RAKP hash sonucunu standart dogrulama sonucuna donusturur.
 
-import hashlib
-
 from vulnverifier.metasploit_adapter import VARSAYILAN_IPMI_PORTU
 from vulnverifier.metasploit_ipmi_hash_parser import MetasploitIpmiHashSonucu
 from vulnverifier.models import KanitBilgisi, KontrolSonucu, ResultStatus
@@ -29,12 +27,14 @@ def ipmiHashSonucunuOlustur(
         KanitBilgisi("protokol", "udp"),
     ]
     for kayit in eslesenHashler:
-        parmakIzi = hashlib.sha256(f"{kayit.salt}:{kayit.sha1Hash}".encode()).hexdigest()
         kullaniciAdi = kayit.kullaniciAdi or "<bos>"
         kanitlar.append(
             KanitBilgisi(
                 "ipmiHash",
-                f"{kayit.taramaNoktasi}:{kayit.port}|{kullaniciAdi}|sha256:{parmakIzi}",
+                (
+                    f"{kayit.taramaNoktasi}:{kayit.port}|{kullaniciAdi}|"
+                    f"{kayit.salt}:{kayit.sha1Hash}"
+                ),
             )
         )
     kanitlar.extend(KanitBilgisi("detay", detay) for detay in taramaSonucu.detaylar)

@@ -1,6 +1,8 @@
 # Harici komutlari shell kullanmadan guvenli arguman listesiyle calistirir.
 
 import math
+import os
+import signal
 import subprocess
 import threading
 import time
@@ -10,6 +12,8 @@ from dataclasses import dataclass
 VARSAYILAN_ZAMAN_ASIMI = 120.0
 IPTAL_KONTROL_ARALIGI = 0.05
 SONLANDIRMA_BEKLEME_SURESI = 1.0
+_aktifSurecler: set[subprocess.Popen[str]] = set()
+_aktifSurecKilidi = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,35 +84,45 @@ def komutuCalistir(
             text=True,
             encoding="utf-8",
             errors="replace",
+            start_new_session=os.name == "posix",
         )
     except OSError as hata:
         raise KomutBaslatmaHatasi(dogrulanmisParcalar, str(hata)) from hata
+    with _aktifSurecKilidi:
+        _aktifSurecler.add(surec)
     baslangicZamani = time.monotonic()
 
-    while True:
-        if iptalDenetimi is not None and iptalDenetimi.iptalIstendiMi():
-            _sureciSonlandir(surec)
-            raise KomutIptalHatasi(dogrulanmisParcalar)
+    try:
+        while True:
+            if iptalDenetimi is not None and iptalDenetimi.iptalIstendiMi():
+                _sureciSonlandir(surec)
+                raise KomutIptalHatasi(dogrulanmisParcalar)
 
-        kalanSure = dogrulanmisZamanAsimi - (time.monotonic() - baslangicZamani)
-        if kalanSure <= 0:
-            _sureciSonlandir(surec)
-            raise KomutZamanAsimiHatasi(
-                komutParcalari=dogrulanmisParcalar,
-                zamanAsimi=dogrulanmisZamanAsimi,
-            )
+            kalanSure = dogrulanmisZamanAsimi - (time.monotonic() - baslangicZamani)
+            if kalanSure <= 0:
+                _sureciSonlandir(surec)
+                raise KomutZamanAsimiHatasi(
+                    komutParcalari=dogrulanmisParcalar,
+                    zamanAsimi=dogrulanmisZamanAsimi,
+                )
 
-        try:
-            standartCikti, standartHata = surec.communicate(
-                timeout=min(IPTAL_KONTROL_ARALIGI, kalanSure),
-            )
-            return KomutSonucu(
-                cikisKodu=surec.wait(),
-                standartCikti=standartCikti,
-                standartHata=standartHata,
-            )
-        except subprocess.TimeoutExpired:
-            continue
+            try:
+                standartCikti, standartHata = surec.communicate(
+                    timeout=min(IPTAL_KONTROL_ARALIGI, kalanSure),
+                )
+                return KomutSonucu(
+                    cikisKodu=surec.wait(),
+                    standartCikti=standartCikti,
+                    standartHata=standartHata,
+                )
+            except subprocess.TimeoutExpired:
+                continue
+    except BaseException:
+        _sureciSonlandir(surec)
+        raise
+    finally:
+        with _aktifSurecKilidi:
+            _aktifSurecler.discard(surec)
 
 
 def komutuSonucaDonusturerekCalistir(
@@ -127,17 +141,42 @@ def komutuSonucaDonusturerekCalistir(
         )
 
 
+def aktifKomutlariSonlandir() -> None:
+    # Paralel taramalarda calisan tum harici surecleri guvenli bicimde kapatir.
+    with _aktifSurecKilidi:
+        surecler = tuple(_aktifSurecler)
+    for surec in surecler:
+        _sureciSonlandir(surec)
+
+
 def _sureciSonlandir(surec: subprocess.Popen[str]) -> None:
-    # Once normal sonlandirma dener, surec yanit vermezse zorla kapatir.
+    # Once surec grubunu sonlandirir, yanit gelmezse grubu zorla kapatir.
     if surec.poll() is not None:
         return
 
-    surec.terminate()
+    _surecSinyaliGonder(surec, signal.SIGTERM)
     try:
         surec.communicate(timeout=SONLANDIRMA_BEKLEME_SURESI)
     except subprocess.TimeoutExpired:
-        surec.kill()
+        _surecSinyaliGonder(surec, signal.SIGKILL)
         surec.communicate()
+
+
+def _surecSinyaliGonder(surec: subprocess.Popen[str], sinyal: signal.Signals) -> None:
+    # POSIX ortaminda tum surec grubuna, diger ortamlarda ana surece sinyal yollar.
+    try:
+        if os.name == "posix":
+            os.killpg(os.getpgid(surec.pid), sinyal)
+        elif sinyal is signal.SIGTERM:
+            surec.terminate()
+        else:
+            surec.kill()
+    except (OSError, ProcessLookupError):
+        if surec.poll() is None:
+            if sinyal is signal.SIGTERM:
+                surec.terminate()
+            else:
+                surec.kill()
 
 
 def _komutParcalariniDogrula(komutParcalari: Sequence[str]) -> tuple[str, ...]:

@@ -216,6 +216,19 @@ def varsayilanKataloguOlustur() -> CheckRegistry:
             gerekliAraclar=("nmap",),
         )
     )
+    kontrolKatalogu.kontrolEkle(
+        _saltOkunurKontrol(
+            kontrolKimligi="smb-security-discovery",
+            bulguAnahtari="insecure-smb-configuration",
+            baslik="SMB Guvenlik Kesfi",
+            aciklama=(
+                "SMB servisinin kimlik, protokol ve imzalama yapilandirmasini "
+                "guvenli NSE betikleriyle dogrular."
+            ),
+            varsayilanPortlar=(445,),
+            gerekliAraclar=("nmap",),
+        )
+    )
     return kontrolKatalogu
 
 
