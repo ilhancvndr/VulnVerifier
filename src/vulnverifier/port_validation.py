@@ -41,7 +41,7 @@ def portuDogrula(port: str | int) -> int:
 
 
 def portlariDogrula(portlar: PortGirdisi) -> tuple[int, ...]:
-    # Tek veya birden fazla portu dogrular, tekrar etmeden sirali dondurur.
+    # Tek, virgullu veya tekrarlanmis port girdilerini sirali ve benzersiz dondurur.
     if portlar is None:
         return ()
     if isinstance(portlar, (str, int)):
@@ -53,10 +53,21 @@ def portlariDogrula(portlar: PortGirdisi) -> tuple[int, ...]:
 
     dogrulanmisPortlar: list[int] = []
     gorulenPortlar: set[int] = set()
-    for port in hamPortlar:
-        dogrulanmisPort = portuDogrula(port)
-        if dogrulanmisPort not in gorulenPortlar:
-            dogrulanmisPortlar.append(dogrulanmisPort)
-            gorulenPortlar.add(dogrulanmisPort)
+    for hamPort in hamPortlar:
+        for port in _virgulluPortGirdisiniAyir(hamPort):
+            dogrulanmisPort = portuDogrula(port)
+            if dogrulanmisPort not in gorulenPortlar:
+                dogrulanmisPortlar.append(dogrulanmisPort)
+                gorulenPortlar.add(dogrulanmisPort)
 
     return tuple(dogrulanmisPortlar)
+
+
+def _virgulluPortGirdisiniAyir(port: str | int) -> tuple[str | int, ...]:
+    # Virgullu metni tekil portlara ayirir, tam sayiyi degistirmeden dondurur.
+    if not isinstance(port, str) or "," not in port:
+        return (port,)
+    parcalar = tuple(parca.strip() for parca in port.split(","))
+    if any(not parca for parca in parcalar):
+        raise PortValidationError("Virgülle ayrılmış port listesinde boş değer bulunamaz.")
+    return parcalar

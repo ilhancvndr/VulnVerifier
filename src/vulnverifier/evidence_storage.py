@@ -57,7 +57,8 @@ class KanitManifestoMetadata:
 
 @dataclass(frozen=True, slots=True)
 class AdlandirilmisKanitDosyalari:
-    # Yeni adlara tasinan ham ve normalize evidence yollarini birlikte tasir.
+    # Aciklayici klasor ve dosya adlarina tasinan evidence yollarini birlikte tasir.
+    kanitKlasoru: Path
     hamCiktiDosyalari: HamCiktiDosyalari | None
     normalizeKanitYolu: Path
     kanitDosyasiOzetleri: tuple[KanitDosyasiOzeti, ...]
@@ -163,14 +164,13 @@ def evidenceDosyalariniAdlandir(
     normalizeKanitYolu: str | Path,
     kanitDosyasiOzetleri: tuple[KanitDosyasiOzeti, ...],
 ) -> AdlandirilmisKanitDosyalari:
-    # Gecici evidence adlarini sonuc bilgisi iceren ortak adlara guvenle tasir.
+    # Gecici evidence klasorunu ve dosyalarini sonuc bilgisiyle adlandirir.
     dogrulanmisKlasor = _kanitKlasorunuDogrula(kanitKlasoru)
     normalizeYolu = _dosyaYolunuDogrula(normalizeKanitYolu)
     dosyaAdiTemeli = artifactDosyaAdiTemeliniOlustur(kontrolSonucu)
     tasimaPlani: list[tuple[Path, Path]] = [
         (normalizeYolu, dogrulanmisKlasor / f"{dosyaAdiTemeli}-evidence.json")
     ]
-    yeniHamDosyalar: HamCiktiDosyalari | None = None
     if hamCiktiDosyalari is not None:
         yeniStandartCiktiYolu = dogrulanmisKlasor / f"{dosyaAdiTemeli}-stdout.txt"
         yeniStandartHataYolu = dogrulanmisKlasor / f"{dosyaAdiTemeli}-stderr.txt"
@@ -180,24 +180,42 @@ def evidenceDosyalariniAdlandir(
                 (hamCiktiDosyalari.standartHataYolu, yeniStandartHataYolu),
             )
         )
-        yeniHamDosyalar = HamCiktiDosyalari(
-            standartCiktiYolu=yeniStandartCiktiYolu,
-            standartHataYolu=yeniStandartHataYolu,
-            cikisKodu=hamCiktiDosyalari.cikisKodu,
-        )
 
     _evidenceDosyalariniGuvenleTasi(dogrulanmisKlasor, tuple(tasimaPlani))
     yolEslemeleri = {eskiYol: yeniYol for eskiYol, yeniYol in tasimaPlani}
+    adlandirilmisKlasor = _kanitKlasorunuAdlandir(dogrulanmisKlasor, dosyaAdiTemeli)
+
+    def yeniKlasoreTasi(dosyaYolu: Path) -> Path:
+        # Klasor yeniden adlandirildiktan sonra dosyanin guncel yolunu dondurur.
+        return adlandirilmisKlasor / dosyaYolu.name
+
+    yeniNormalizeYolu = yeniKlasoreTasi(tasimaPlani[0][1])
+    _normalizeKanitKimliginiGuncelle(yeniNormalizeYolu, adlandirilmisKlasor.name)
+
+    yeniHamDosyalar: HamCiktiDosyalari | None = None
+    if hamCiktiDosyalari is not None:
+        yeniHamDosyalar = HamCiktiDosyalari(
+            standartCiktiYolu=yeniKlasoreTasi(yolEslemeleri[hamCiktiDosyalari.standartCiktiYolu]),
+            standartHataYolu=yeniKlasoreTasi(yolEslemeleri[hamCiktiDosyalari.standartHataYolu]),
+            cikisKodu=hamCiktiDosyalari.cikisKodu,
+        )
+
     yeniOzetler = tuple(
-        KanitDosyasiOzeti(
-            dosyaYolu=yolEslemeleri.get(dosyaOzeti.dosyaYolu, dosyaOzeti.dosyaYolu),
+        kanitDosyasiOzetiniHesapla(yeniNormalizeYolu)
+        if yeniKlasoreTasi(yolEslemeleri.get(dosyaOzeti.dosyaYolu, dosyaOzeti.dosyaYolu))
+        == yeniNormalizeYolu
+        else KanitDosyasiOzeti(
+            dosyaYolu=yeniKlasoreTasi(
+                yolEslemeleri.get(dosyaOzeti.dosyaYolu, dosyaOzeti.dosyaYolu)
+            ),
             sha256=dosyaOzeti.sha256,
         )
         for dosyaOzeti in kanitDosyasiOzetleri
     )
     return AdlandirilmisKanitDosyalari(
+        kanitKlasoru=adlandirilmisKlasor,
         hamCiktiDosyalari=yeniHamDosyalar,
-        normalizeKanitYolu=tasimaPlani[0][1],
+        normalizeKanitYolu=yeniNormalizeYolu,
         kanitDosyasiOzetleri=yeniOzetler,
     )
 
@@ -388,6 +406,45 @@ def _evidenceDosyalariniGuvenleTasi(
 
     for kaynakYolu, _ in tasimaPlani:
         kaynakYolu.unlink()
+
+
+def _kanitKlasorunuAdlandir(kanitKlasoru: Path, dosyaAdiTemeli: str) -> Path:
+    # Rastgele gecici klasoru aciklayici ve cakismayan sonuc klasorune donusturur.
+    sira = 1
+    while True:
+        klasorAdi = dosyaAdiTemeli if sira == 1 else f"{dosyaAdiTemeli}-{sira}"
+        hedefKlasor = kanitKlasoru.parent / klasorAdi
+        if hedefKlasor.exists() or hedefKlasor.is_symlink():
+            sira += 1
+            continue
+        try:
+            kanitKlasoru.rename(hedefKlasor)
+        except OSError as hata:
+            if hedefKlasor.exists() or hedefKlasor.is_symlink():
+                sira += 1
+                continue
+            raise KanitDosyasiHatasi(
+                f"Evidence klasoru aciklayici adla kaydedilemedi: {hedefKlasor}",
+            ) from hata
+        return hedefKlasor
+
+
+def _normalizeKanitKimliginiGuncelle(normalizeKanitYolu: Path, calismaKimligi: str) -> None:
+    # Normalize JSON icindeki gecici kimligi son evidence klasoru adiyla eslestirir.
+    geciciYol = normalizeKanitYolu.with_name(f".{normalizeKanitYolu.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        kanitVerisi = json.loads(normalizeKanitYolu.read_text(encoding="utf-8"))
+        kanitVerisi["calismaKimligi"] = calismaKimligi
+        jsonMetni = json.dumps(kanitVerisi, ensure_ascii=False, indent=2) + "\n"
+        geciciYol.write_text(jsonMetni, encoding="utf-8", newline="")
+        os.chmod(geciciYol, HAM_CIKTI_DOSYASI_IZNI)
+        geciciYol.replace(normalizeKanitYolu)
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as hata:
+        raise KanitDosyasiHatasi(
+            f"Normalize evidence calisma kimligi guncellenemedi: {normalizeKanitYolu}",
+        ) from hata
+    finally:
+        geciciYol.unlink(missing_ok=True)
 
 
 def _metinDosyasiniAtomikOlustur(dosyaYolu: Path, metin: str) -> None:

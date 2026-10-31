@@ -103,13 +103,16 @@ Port ve servis keşfi bir zafiyet doğrulaması değildir. Açık port bulunduğ
 çıkış kodu üretir ve `findings` listesine zafiyet olarak eklenmez; çalışma geçmişi ve
 evidence kayıtları yine korunur.
 
-Birden fazla port için `--port` seçeneğini tekrarlayın. `--port` verilmezse Nmap varsayılan en yaygın 1000 TCP portunu tarar. Sonuç, yapılandırılmış kanıtlar ve evidence dosyalarının SHA-256 değerleri terminalde gösterilir. Dosyalar varsayılan olarak proje dizinindeki `evidence/` klasörüne yazılır. Farklı bir ana dizin kullanmak için `--evidence-dir` verilebilir.
+Birden fazla port virgülle ayrılarak tek `--port` seçeneğinde verilir. `--port` verilmezse
+Nmap varsayılan en yaygın 1000 TCP portunu tarar. Sonuç, yapılandırılmış kanıtlar ve
+evidence dosyalarının SHA-256 değerleri terminalde gösterilir. Dosyalar varsayılan olarak
+proje dizinindeki `evidence/` klasörüne yazılır. Farklı bir ana dizin kullanmak için
+`--evidence-dir` verilebilir.
 
 ```bash
 vulnverifier verify port-service-discovery \
   --target 192.0.2.10 \
-  --port 80 \
-  --port 443 \
+  --port 80,443,445 \
   --allow-target 192.0.2.0/24 \
   --evidence-dir ./guvenli-evidence
 ```
@@ -126,10 +129,9 @@ vulnverifier verify port-service-discovery \
 
 Kullanıcıya sunulan PNG varsayılan olarak proje kökündeki `screenshots/` klasörüne
 yazılır. Denetim bütünlüğü için aynı açıklayıcı adla evidence klasöründe de tutulur;
-SHA-256 değeri `*-manifest.json` ve SQLite kaydına eklenir. Görüntüde hedef, kontrol,
-durum, özet, süre ve yapılandırılmış kanıtlar bulunur. Hassas değerler mevcut evidence
-politikasıyla maskelenir. Bu seçenek tüm mevcut ve gelecekte ortak doğrulama akışına
-bağlanacak kontrollerde kullanılabilir.
+SHA-256 değeri `*-manifest.json` ve SQLite kaydına eklenir. Tek hedef görüntüsü kontrol
+türüne göre yalnızca raporda gerekli hedef, port, servis, protokol, sürüm veya doğrulama
+alanlarını gösterir. Hassas değerler mevcut evidence politikasıyla maskelenir.
 
 Varsayılan klasör yerine farklı bir konum kullanmak için `--screenshot-dir` verilebilir.
 Bu seçenek tek başına kullanıldığında da ekran görüntüsü üretimini etkinleştirir:
@@ -141,11 +143,27 @@ vulnverifier verify smb-security-discovery \
   --screenshot-dir ./screenshots
 ```
 
-Çoklu hedeflerde her hedef için ayrı bir PNG üretilir. Kullanıcıya sunulan dosya adı
-`hedef-kontrol-durum-YYYYAAGG-SSDD.png` biçimindedir; örneğin
-`10-20-10-15-smb-security-discovery-VULNERABLE-20261023-1425.png`. Dosya adında
-saniye bulunmaz. Aynı ad mevcutsa dosyanın üzerine yazmak yerine kısa çalışma kimliği
-eklenir.
+Tek hedefte kullanıcıya sunulan dosya adı `hedef-kontrol-durum-YYYYAAGG-SSDD.png`
+biçimindedir. Çoklu hedeflerde her CIDR bloğu için ayrı, CIDR dışındaki seçili hedefler
+için tek toplu özet oluşturulur. Port/servis ve sürüm keşifleri tablo; SSLv2/SSLv3 ve SMB
+kontrolleri bulgu türlerine ayrılmış hedef listeleri; diğer kontroller doğrulanmış hedef
+listesi kullanır. Çok sayıda sonuç otomatik olarak `sayfa-1`, `sayfa-2` biçiminde bölünür.
+Dosya adında saniye bulunmaz. Aynı ad mevcutsa dosyanın üzerine yazmak yerine kısa çalışma
+kimliği eklenir. Görsel sayısı azaltılsa da bütün hedeflerin evidence ve SQLite kayıtları
+korunur.
+
+`--all-screenshots` geriye dönük uyumluluk için PNG üretimini etkinleştirir. Toplu
+özetler zaten kapsamdaki bütün kesin sonuçları içerir:
+
+```bash
+vulnverifier verify port-service-discovery \
+  --target "10.20.10.0/24, 10.30.10.0/24" \
+  --all-screenshots
+```
+
+Çoklu `smb-security-discovery` görüntüsü yalnızca `SMBv1 açık olan hedefler` ve `SMB
+imzalaması zorunlu olmayan hedefler` listelerini içerir. Her bölümde 25 hedefden sonra
+yeni PNG sayfası açılır.
 
 Ham çıktı, hata çıktısı, normalize sonuç ve manifesto da aynı ad temelini kullanır;
 dosya türü sırasıyla `-stdout.txt`, `-stderr.txt`, `-evidence.json` ve
@@ -336,10 +354,11 @@ vulnverifier verify smb-security-discovery \
 Hedefler varsayılan olarak en fazla dört kontrollü iş parçacığıyla taranır. Bu değer
 `--workers 1` ile sıralı çalışmaya indirilebilir veya `--workers 16` değerine kadar
 artırılabilir. Terminal ve SQLite sırası hedef giriş sırasını korur. Çoklu hedeflerde
-varsayılan terminal tablosu ve PNG üretimi kesin `VULNERABLE` sonuçları ile bilgi amaçlı
-`DISCOVERED` sonuçlarını kapsar. `-v` veya `--verbose` verilirse temiz, bulunamayan,
-potansiyel, belirsiz, atlanan ve hatalı sonuçlar da tabloda gösterilir; `--screenshot`
-ile birlikte kullanıldığında tüm sonuçlar için PNG üretilir.
+varsayılan terminal tablosu ve toplu PNG üretimi kesin `VULNERABLE`, bilgi amaçlı
+`DISCOVERED` ve sürüm incelemesi gerektiren `POTENTIALLY_VULNERABLE` sonuçlarını kapsar.
+`-v` veya `--verbose` verilirse temiz, bulunamayan, belirsiz, atlanan ve hatalı sonuçlar
+terminal tablosunda da gösterilir. Toplu PNG'ler verbose durumundan bağımsız olarak yalnızca
+kesin bulguları ve doğrulanmış keşifleri listeler.
 Filtre ne olursa olsun her hedefin sonucu ayrı evidence klasörü ve SQLite kaydıyla
 saklanır. Virgüllü hedef, CIDR ve `--target-file` desteği bütün mevcut ve daha sonra
 kaydedilecek kontrollerin ortak çalışma akışında kullanılabilir.
@@ -353,6 +372,7 @@ Port verilmezse `445/tcp` kullanılır. Nmap `smb-os-discovery`, `smb-protocols`
 - `20`: Sonuç kesinleştirilemedi (`INCONCLUSIVE`)
 - `30`: Kontrol atlandı (`SKIPPED`)
 - `40`: Kontrol hatayla tamamlandı (`ERROR`)
+- `130`: Tarama kullanıcı tarafından `Ctrl+C` ile iptal edildi
 - `2`: Girdi geçersiz veya hedef/risk güvenlik politikası tarafından reddedildi
 
 Geçersiz hedef/port girdileri, kapsam dışı hedefler ve onaysız `intrusive` kontroller `2` çıkış koduyla reddedilir:

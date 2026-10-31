@@ -344,7 +344,9 @@ def _yaziTipiniYukle(
             "/Applications/LibreOffice.app/Contents/Resources/fonts/truetype/Carlito-Bold.ttf",
             "/usr/share/fonts/truetype/crosextra/Carlito-Bold.ttf",
             "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
             "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         )
     else:
         adaylar = (
@@ -353,7 +355,9 @@ def _yaziTipiniYukle(
             "/Applications/LibreOffice.app/Contents/Resources/fonts/truetype/Carlito-Regular.ttf",
             "/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf",
             "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
             "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         )
     for aday in adaylar:
         if Path(aday).is_file():

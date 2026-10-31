@@ -2,6 +2,7 @@
 
 import ipaddress
 import stat
+from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 
@@ -17,11 +18,36 @@ class HedefGirdisiHatasi(ValueError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class HedefGrubu:
+    # Bir ham girdinin tekil hedef mi yoksa CIDR blogu mu oldugunu korur.
+
+    kaynakGirdi: str
+    cidrMi: bool
+    hedefler: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class HedefHazirlamaSonucu:
+    # Tekillestirilmis hedefleri ve kaynak gruplarini birlikte tasir.
+
+    hedefler: tuple[str, ...]
+    hedefGruplari: tuple[HedefGrubu, ...]
+
+
 def hedefleriHazirla(
     hedefMetni: str | None,
     hedefDosyasi: str | Path | None = None,
 ) -> tuple[str, ...]:
     # Komut satiri ve dosya hedeflerini dogrular, birlestirir ve tekillestirir.
+    return hedefleriGruplariylaHazirla(hedefMetni, hedefDosyasi).hedefler
+
+
+def hedefleriGruplariylaHazirla(
+    hedefMetni: str | None,
+    hedefDosyasi: str | Path | None = None,
+) -> HedefHazirlamaSonucu:
+    # Hedefleri kaynak girdileriyle birlikte dogrular ve tekillestirir.
     hamHedefler: list[str] = []
     if hedefMetni is not None:
         hamHedefler.extend(_virgulluMetniAyir(hedefMetni, "--target"))
@@ -34,16 +60,37 @@ def hedefleriHazirla(
 
     standartHedefler: list[str] = []
     gorulenHedefler: set[str] = set()
+    hedefGruplari: list[HedefGrubu] = []
     for hamHedef in hamHedefler:
-        for standartHedef in _hedefGirdisiniGenislet(hamHedef):
+        genisletilmisHedefler = _hedefGirdisiniGenislet(hamHedef)
+        grupHedefleri: list[str] = []
+        for standartHedef in genisletilmisHedefler:
             if standartHedef not in gorulenHedefler:
                 standartHedefler.append(standartHedef)
+                grupHedefleri.append(standartHedef)
                 gorulenHedefler.add(standartHedef)
             if len(standartHedefler) > AZAMI_HEDEF_SAYISI:
                 raise HedefGirdisiHatasi(
                     f"CIDR açılımı sonrası en fazla {AZAMI_HEDEF_SAYISI} hedef kullanılabilir."
                 )
-    return tuple(standartHedefler)
+        hedefGruplari.append(
+            HedefGrubu(
+                kaynakGirdi=_hedefGrubuKaynaginiStandartlastir(hamHedef, genisletilmisHedefler),
+                cidrMi="/" in hamHedef,
+                hedefler=tuple(grupHedefleri),
+            )
+        )
+    return HedefHazirlamaSonucu(tuple(standartHedefler), tuple(hedefGruplari))
+
+
+def _hedefGrubuKaynaginiStandartlastir(
+    hamHedef: str,
+    genisletilmisHedefler: tuple[str, ...],
+) -> str:
+    # Ozetlerde kullanilacak tekil hedef veya CIDR metnini standartlastirir.
+    if "/" in hamHedef:
+        return str(ipaddress.ip_network(hamHedef, strict=True))
+    return genisletilmisHedefler[0]
 
 
 def _hedefGirdisiniGenislet(hamHedef: str) -> tuple[str, ...]:

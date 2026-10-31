@@ -13,10 +13,12 @@ htmlcov/
 *.db
 *.db-shm
 *.db-wal
+*.db.bak
 dist/
 build/
 .local-lab/
 /screenshots/
+/video-demo/
 
 # Yalnizca yerel gelistirme ve kabul dosyalari
 /tests/

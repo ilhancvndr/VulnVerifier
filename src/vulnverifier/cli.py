@@ -1,8 +1,11 @@
 # VulnVerifier komut satiri arayuzunu ve baslangic komutlarini saglar.
 
 import platform
+import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from functools import wraps
 from pathlib import Path
 from typing import Annotated, Any, Protocol, cast
 
@@ -119,6 +122,12 @@ from vulnverifier.checks.vmware_esxi_version import (
     KONTROL_KIMLIGI as VMWARE_SURUM_KONTROL_KIMLIGI,
 )
 from vulnverifier.command_runner import aktifKomutlariSonlandir
+from vulnverifier.control_screenshot_renderer import (
+    KESIN_GORSEL_DURUMLARI,
+    OZEL_GORSEL_KONTROLLERI,
+    ozelTekliEkranGoruntusuOlustur,
+    topluKontrolEkranGoruntuleriOlustur,
+)
 from vulnverifier.database import (
     VARSAYILAN_VERITABANI_YOLU,
     VeritabaniHatasi,
@@ -153,7 +162,12 @@ from vulnverifier.security_policy import (
     eszamanliKontroluSinirla,
     guvenlikPolitikasiniDogrula,
 )
-from vulnverifier.target_input import HedefGirdisiHatasi, hedefleriHazirla
+from vulnverifier.smb_screenshot_renderer import smbTopluEkranGoruntuleriOlustur
+from vulnverifier.target_input import (
+    HedefGirdisiHatasi,
+    HedefGrubu,
+    hedefleriGruplariylaHazirla,
+)
 from vulnverifier.testssl_adapter import TestsslAdaptoru, testsslAraciniKontrolEt
 from vulnverifier.tool_availability import araciKontrolEt
 from vulnverifier.tool_management import (
@@ -279,8 +293,7 @@ belirtilmezse kontrolün varsayılan portu veya tarama profili kullanılır.
 [bold]Birden fazla port[/bold]
   vulnverifier verify port-service-discovery \\
     --target 192.0.2.10 \\
-    --port 80 \\
-    --port 443
+    --port 80,443,445
 
 [bold]Çoklu hedef[/bold]
   vulnverifier verify port-service-discovery \\
@@ -289,8 +302,9 @@ belirtilmezse kontrolün varsayılan portu veya tarama profili kullanılır.
 
 Çoklu hedeflerde varsayılan çıktı kesin [bold]VULNERABLE[/bold] bulguları ve bilgi
 amaçlı [bold]DISCOVERED[/bold] sonuçlarını gösterir. Diğer sonuçları da görmek için
-[bold]-v[/bold] veya [bold]--verbose[/bold] kullanılır. Paralellik [bold]--workers[/bold]
-ile 1-16 arasında ayarlanır; varsayılan değer 4'tür.
+[bold]-v[/bold] veya [bold]--verbose[/bold] kullanılır. Sürüm keşfi gerektiren
+[bold]POTENTIALLY_VULNERABLE[/bold] sonuçları da varsayılan özette gösterilir.
+Paralellik [bold]--workers[/bold] ile 1-16 arasında ayarlanır; varsayılan değer 4'tür.
 
 [bold]Intrusive kontrol[/bold]
   vulnverifier verify dns-cache-snooping \\
@@ -312,12 +326,20 @@ ile 1-16 arasında ayarlanır; varsayılan değer 4'tür.
     --port 443 \\
     --screenshot
 
+Tek hedefte kontrol türüne uygun sade bir kanıt PNG'si oluşturulur. Çoklu hedeflerde her
+CIDR için ayrı, CIDR dışındaki seçili IP'ler için tek toplu özet üretilir. Büyük sonuçlar
+otomatik olarak birden fazla PNG sayfasına bölünür. SMB özeti SMBv1 açık ve SMB imzalaması
+zorunlu olmayan IP'leri ayrı listeler. [bold]--all-screenshots[/bold] geriye dönük uyumluluk
+için ekran görüntüsü üretimini etkinleştirir; toplu özetler zaten tüm kesin sonuçları içerir.
+Tarama, evidence ve SQLite kayıtları ekran görüntüsü politikasından etkilenmez.
+
 [bold]Çıkış kodları[/bold]
    0  Zafiyet doğrulanmadı veya keşif tamamlandı.
   10  Zafiyet veya potansiyel zafiyet tespit edildi.
   20  Sonuç kesinleştirilemedi.
   30  Kontrol atlandı.
   40  Kontrol hatayla tamamlandı.
+ 130  Tarama kullanıcı tarafından Ctrl+C ile iptal edildi.
    2  Girdi veya güvenlik politikası nedeniyle işlem reddedildi.
 """
 
@@ -358,8 +380,10 @@ CIKIS_KODU_ZAFIYET = 10
 CIKIS_KODU_BELIRSIZ = 20
 CIKIS_KODU_ATLANDI = 30
 CIKIS_KODU_HATA = 40
+CIKIS_KODU_IPTAL = 130
 VARSAYILAN_IS_PARACIGI_SAYISI = 4
 AZAMI_IS_PARACIGI_SAYISI = 16
+CIDR_BASINA_EKRAN_GORUNTUSU_SINIRI = 2
 KARSILAMA_BASLIGI = "\n".join(
     (
         "__   ___   _ _    _  ___   _____ ___ ___ ___ ___ ___ ___",
@@ -368,6 +392,25 @@ KARSILAMA_BASLIGI = "\n".join(
         "  \\_/  \\___/|____|_|\\_| \\_/ |___|_|_\\___|_| |___|___|_|_\\",
     )
 )
+
+
+def kullaniciIptaliniYonet[**ParametrelerT, DonusT](
+    fonksiyon: Callable[ParametrelerT, DonusT],
+) -> Callable[ParametrelerT, DonusT]:
+    # Ctrl+C iptalini traceback yerine standart CLI mesaji ve koduyla sonlandirir.
+    @wraps(fonksiyon)
+    def iptalYonetimliFonksiyon(
+        *args: ParametrelerT.args,
+        **kwargs: ParametrelerT.kwargs,
+    ) -> DonusT:
+        try:
+            return fonksiyon(*args, **kwargs)
+        except KeyboardInterrupt:
+            aktifKomutlariSonlandir()
+            konsol.print("[yellow]Tarama kullanıcı tarafından iptal edildi.[/yellow]")
+            raise typer.Exit(code=CIKIS_KODU_IPTAL) from None
+
+    return iptalYonetimliFonksiyon
 
 
 class CalismaCiktisiProtokolu(Protocol):
@@ -594,6 +637,7 @@ def bulgulariListele(
     help="Seçilen doğrulama kontrolünü yetkili hedefte çalıştırır.",
     epilog=DOGRULAMA_YARDIM_SONU,
 )
+@kullaniciIptaliniYonet
 @eszamanliKontroluSinirla
 def dogrula(
     kontrolKimligi: Annotated[
@@ -626,7 +670,7 @@ def dogrula(
         typer.Option(
             "--port",
             "-p",
-            help="Doğrulanacak port; desteklenen kontrollerde birden fazla kez kullanılabilir.",
+            help="Doğrulanacak port veya virgülle ayrılmış portlar; örnek: 80,443,445.",
         ),
     ] = None,
     projeAdi: Annotated[
@@ -683,6 +727,13 @@ def dogrula(
             ),
         ),
     ] = None,
+    tumEkranGoruntuleri: Annotated[
+        bool,
+        typer.Option(
+            "--all-screenshots",
+            help=("PNG üretimini etkinleştirir; toplu özetler tüm kesin sonuçları içerir."),
+        ),
+    ] = False,
     isParcacigiSayisi: Annotated[
         int,
         typer.Option(
@@ -694,7 +745,8 @@ def dogrula(
     ] = VARSAYILAN_IS_PARACIGI_SAYISI,
 ) -> None:
     try:
-        standartHedefler = hedefleriHazirla(hedef, hedefDosyasi)
+        hedefHazirlamaSonucu = hedefleriGruplariylaHazirla(hedef, hedefDosyasi)
+        standartHedefler = hedefHazirlamaSonucu.hedefler
     except HedefGirdisiHatasi as hata:
         konsol.print(f"[red]Geçersiz hedef: {hata}[/red]")
         raise typer.Exit(code=2) from hata
@@ -741,9 +793,11 @@ def dogrula(
             projeAdi,
             kontrolTanimi,
             ayrintiliCikti,
-            ekranGoruntusu or ekranGoruntusuDizini is not None,
+            ekranGoruntusu or ekranGoruntusuDizini is not None or tumEkranGoruntuleri,
             ekranGoruntusuDizini,
             isParcacigiSayisi,
+            hedefHazirlamaSonucu.hedefGruplari,
+            tumEkranGoruntuleri,
         )
     calismaCiktisi = _tekHedefKontrolunuCalistir(
         kontrolKimligi,
@@ -754,7 +808,7 @@ def dogrula(
 
     try:
         calismaCiktisi = _evidenceDosyaAdlariniTamamla(calismaCiktisi)
-        if ekranGoruntusu or ekranGoruntusuDizini is not None:
+        if ekranGoruntusu or ekranGoruntusuDizini is not None or tumEkranGoruntuleri:
             calismaCiktisi = _ekranGoruntusunuTamamla(
                 calismaCiktisi,
                 kontrolTanimi,
@@ -1092,8 +1146,11 @@ def _cokluKontroluCalistir(
     ekranGoruntusu: bool = False,
     ekranGoruntusuDizini: Path | None = None,
     isParcacigiSayisi: int = VARSAYILAN_IS_PARACIGI_SAYISI,
+    hedefGruplari: tuple[HedefGrubu, ...] = (),
+    tumEkranGoruntuleri: bool = False,
 ) -> None:
     # Hedefleri sinirli paralellikle tarar, sirali kaydeder ve birlesik ozet gosterir.
+    taramaBaslangici = time.monotonic()
     kayitDeposu = KaliciKayitDeposu(veritabaniYolu)
     try:
         kayitDeposu.hazirla()
@@ -1107,10 +1164,6 @@ def _cokluKontroluCalistir(
                         hedef,
                         portlar,
                         kanitAnaDizini,
-                        kontrolTanimi,
-                        ayrintiliCikti,
-                        ekranGoruntusu,
-                        ekranGoruntusuDizini,
                     ),
                     hedefler,
                 )
@@ -1121,6 +1174,28 @@ def _cokluKontroluCalistir(
             raise
         else:
             isParcacigiHavuzu.shutdown(wait=True)
+        taramaSuresi = time.monotonic() - taramaBaslangici
+
+        ekranDosyaSayisi = 0
+        ciktiListesi = list(tumCiktilar)
+        if ekranGoruntusu:
+            if kontrolKimligi == SMB_GUVENLIK_KONTROL_KIMLIGI:
+                ciktiListesi, ekranDosyaSayisi = _smbTopluEkranGoruntuleriniTamamla(
+                    ciktiListesi,
+                    hedefGruplari,
+                    ekranGoruntusuDizini,
+                )
+            else:
+                ciktiListesi, ekranDosyaSayisi = _topluKontrolEkranGoruntuleriniTamamla(
+                    ciktiListesi,
+                    hedefGruplari,
+                    kontrolTanimi,
+                    ekranGoruntusuDizini,
+                )
+        tumCiktilar = tuple(
+            _evidenceManifestosunuTamamla(calismaCiktisi, kontrolTanimi.gerekliAraclar)
+            for calismaCiktisi in ciktiListesi
+        )
         for calismaCiktisi in tumCiktilar:
             kayitDeposu.dogrulamaKaydet(
                 projeAdi,
@@ -1139,6 +1214,7 @@ def _cokluKontroluCalistir(
     varsayilanGosterilecekDurumlar = {
         ResultStatus.VULNERABLE,
         ResultStatus.DISCOVERED,
+        ResultStatus.POTENTIALLY_VULNERABLE,
     }
     gosterilecekCiktilar = (
         tumCiktilar
@@ -1151,6 +1227,7 @@ def _cokluKontroluCalistir(
     )
     if not gosterilecekCiktilar:
         konsol.print("[yellow]Kesin doğrulanmış bulgu veya keşif bulunamadı.[/yellow]")
+        konsol.print(f"[dim]Tarama süresi: {taramaSuresi:.3f} saniye[/dim]")
     elif kontrolKimligi == SMB_GUVENLIK_KONTROL_KIMLIGI:
         _cokluSmbSonuclariniGoster(gosterilecekCiktilar)
     else:
@@ -1162,11 +1239,7 @@ def _cokluKontroluCalistir(
     )
     if ekranGoruntusu:
         ciktiDizini = ekranGoruntusuDizini or VARSAYILAN_EKRAN_GORUNTUSU_DIZINI
-        ekranGoruntusuSayisi = sum(
-            ayrintiliCikti or cikti.kontrolSonucu.durum in varsayilanGosterilecekDurumlar
-            for cikti in tumCiktilar
-        )
-        konsol.print(f"[dim]Ekran görüntüleri: {ciktiDizini} ({ekranGoruntusuSayisi} dosya)[/dim]")
+        konsol.print(f"[dim]Ekran görüntüleri: {ciktiDizini} ({ekranDosyaSayisi} dosya)[/dim]")
     raise typer.Exit(code=_cokluSonucCikisKodunuAl(tumCiktilar))
 
 
@@ -1175,30 +1248,222 @@ def _cokluHedefCiktisiniHazirla(
     hedef: str,
     portlar: tuple[int, ...],
     kanitAnaDizini: Path,
-    kontrolTanimi: CheckDefinition,
-    ayrintiliCikti: bool,
-    ekranGoruntusu: bool,
-    ekranGoruntusuDizini: Path | None,
 ) -> CalismaCiktisiProtokolu:
-    # Tek hedefi tarar ve veritabani yazimi disindaki evidence islemlerini tamamlar.
+    # Tek hedefi tarar ve ortak evidence dosya adlarini tamamlar.
     calismaCiktisi = _tekHedefKontrolunuCalistir(
         kontrolKimligi,
         hedef,
         portlar,
         kanitAnaDizini,
     )
-    calismaCiktisi = _evidenceDosyaAdlariniTamamla(calismaCiktisi)
-    ekranGoruntusuDurumlari = {ResultStatus.VULNERABLE, ResultStatus.DISCOVERED}
-    if ekranGoruntusu and (
-        ayrintiliCikti or calismaCiktisi.kontrolSonucu.durum in ekranGoruntusuDurumlari
-    ):
-        calismaCiktisi = _ekranGoruntusunuTamamla(
-            calismaCiktisi,
-            kontrolTanimi,
-            ekranGoruntusuDizini,
-            False,
+    return _evidenceDosyaAdlariniTamamla(calismaCiktisi)
+
+
+def _ekranGoruntusuHedefleriniSec(
+    ciktilar: tuple[CalismaCiktisiProtokolu, ...],
+    hedefGruplari: tuple[HedefGrubu, ...],
+    ayrintiliCikti: bool,
+    tumEkranGoruntuleri: bool,
+) -> tuple[tuple[int, ...], tuple[tuple[str, int, int], ...]]:
+    # Tekil hedefleri sinirlamaz, CIDR girdilerinde blok basina kota uygular.
+    varsayilanDurumlar = {ResultStatus.VULNERABLE, ResultStatus.DISCOVERED}
+    hedefIndeksleri = {cikti.kontrolSonucu.hedef: indeks for indeks, cikti in enumerate(ciktilar)}
+
+    def uygunMu(ciktiIndeksi: int) -> bool:
+        return ayrintiliCikti or ciktilar[ciktiIndeksi].kontrolSonucu.durum in varsayilanDurumlar
+
+    if not hedefGruplari:
+        return tuple(indeks for indeks in range(len(ciktilar)) if uygunMu(indeks)), ()
+
+    secilenIndeksler: set[int] = set()
+    cidrOzetleri: list[tuple[str, int, int]] = []
+    for hedefGrubu in hedefGruplari:
+        uygunIndeksler = [
+            hedefIndeksleri[hedef]
+            for hedef in hedefGrubu.hedefler
+            if hedef in hedefIndeksleri and uygunMu(hedefIndeksleri[hedef])
+        ]
+        if not hedefGrubu.cidrMi:
+            secilenIndeksler.update(uygunIndeksler)
+            continue
+
+        # Kesin bulgu ve kesifler, verbose ile gelen diger durumlardan once secilir.
+        siraliIndeksler = sorted(
+            uygunIndeksler,
+            key=lambda indeks: (
+                ciktilar[indeks].kontrolSonucu.durum not in varsayilanDurumlar,
+                indeks,
+            ),
         )
-    return _evidenceManifestosunuTamamla(calismaCiktisi, kontrolTanimi.gerekliAraclar)
+        secilecekIndeksler = (
+            siraliIndeksler
+            if tumEkranGoruntuleri
+            else siraliIndeksler[:CIDR_BASINA_EKRAN_GORUNTUSU_SINIRI]
+        )
+        secilenIndeksler.update(secilecekIndeksler)
+        cidrOzetleri.append((hedefGrubu.kaynakGirdi, len(uygunIndeksler), len(secilecekIndeksler)))
+
+    return tuple(sorted(secilenIndeksler)), tuple(cidrOzetleri)
+
+
+def _smbTopluEkranGoruntuleriniTamamla(
+    ciktilar: list[CalismaCiktisiProtokolu],
+    hedefGruplari: tuple[HedefGrubu, ...],
+    ekranGoruntusuDizini: Path | None,
+) -> tuple[list[CalismaCiktisiProtokolu], int]:
+    # SMB bulgularini kapsam bazinda toplar ve her kapsam icin ozet PNG uretir.
+    ciktiDizini = ekranGoruntusuDizini or VARSAYILAN_EKRAN_GORUNTUSU_DIZINI
+    uretilenDosyaSayisi = 0
+    for kapsam, ciktiIndeksleri in _topluEkranGoruntusuGruplariniOlustur(
+        tuple(ciktilar),
+        hedefGruplari,
+    ):
+        kesinBulguIndeksleri = tuple(
+            indeks
+            for indeks in ciktiIndeksleri
+            if _smbKesinBulgusuVarMi(ciktilar[indeks].kontrolSonucu)
+        )
+        if not kesinBulguIndeksleri:
+            continue
+
+        baglanacakIndeks = kesinBulguIndeksleri[0]
+        baglanacakCikti = ciktilar[baglanacakIndeks]
+        topluSonuc = smbTopluEkranGoruntuleriOlustur(
+            baglanacakCikti.kanitKlasoru,
+            kapsam,
+            tuple(ciktilar[indeks].kontrolSonucu for indeks in ciktiIndeksleri),
+        )
+        for dosyaOzeti in topluSonuc.dosyaOzetleri:
+            ekranGoruntusunuDisaAktar(
+                dosyaOzeti.dosyaYolu,
+                ciktiDizini,
+                baglanacakCikti.kanitKlasoru.name,
+            )
+        ciktilar[baglanacakIndeks] = cast(
+            CalismaCiktisiProtokolu,
+            replace(
+                baglanacakCikti,
+                kanitDosyasiOzetleri=(
+                    *baglanacakCikti.kanitDosyasiOzetleri,
+                    *topluSonuc.dosyaOzetleri,
+                ),
+            ),
+        )
+        uretilenDosyaSayisi += len(topluSonuc.dosyaOzetleri)
+    return ciktilar, uretilenDosyaSayisi
+
+
+def _topluKontrolEkranGoruntuleriniTamamla(
+    ciktilar: list[CalismaCiktisiProtokolu],
+    hedefGruplari: tuple[HedefGrubu, ...],
+    kontrolTanimi: CheckDefinition,
+    ekranGoruntusuDizini: Path | None,
+) -> tuple[list[CalismaCiktisiProtokolu], int]:
+    # SMB disindaki kesin sonuclari kapsam bazli toplu PNG ozetlerine donusturur.
+    ciktiDizini = ekranGoruntusuDizini or VARSAYILAN_EKRAN_GORUNTUSU_DIZINI
+    uretilenDosyaSayisi = 0
+    for kapsam, ciktiIndeksleri in _topluEkranGoruntusuGruplariniOlustur(
+        tuple(ciktilar),
+        hedefGruplari,
+    ):
+        kesinSonucIndeksleri = tuple(
+            indeks
+            for indeks in ciktiIndeksleri
+            if ciktilar[indeks].kontrolSonucu.durum in KESIN_GORSEL_DURUMLARI
+        )
+        if not kesinSonucIndeksleri:
+            continue
+
+        baglanacakIndeks = kesinSonucIndeksleri[0]
+        baglanacakCikti = ciktilar[baglanacakIndeks]
+        topluSonuc = topluKontrolEkranGoruntuleriOlustur(
+            baglanacakCikti.kanitKlasoru,
+            kapsam,
+            kontrolTanimi,
+            tuple(ciktilar[indeks].kontrolSonucu for indeks in ciktiIndeksleri),
+        )
+        for dosyaOzeti in topluSonuc.dosyaOzetleri:
+            ekranGoruntusunuDisaAktar(
+                dosyaOzeti.dosyaYolu,
+                ciktiDizini,
+                baglanacakCikti.kanitKlasoru.name,
+            )
+        ciktilar[baglanacakIndeks] = cast(
+            CalismaCiktisiProtokolu,
+            replace(
+                baglanacakCikti,
+                kanitDosyasiOzetleri=(
+                    *baglanacakCikti.kanitDosyasiOzetleri,
+                    *topluSonuc.dosyaOzetleri,
+                ),
+            ),
+        )
+        uretilenDosyaSayisi += len(topluSonuc.dosyaOzetleri)
+    return ciktilar, uretilenDosyaSayisi
+
+
+def _topluEkranGoruntusuGruplariniOlustur(
+    ciktilar: tuple[CalismaCiktisiProtokolu, ...],
+    hedefGruplari: tuple[HedefGrubu, ...],
+) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    # Her CIDR'yi ayri, CIDR disindaki hedefleri tek toplu kapsam olarak gruplar.
+    hedefIndeksleri = {cikti.kontrolSonucu.hedef: indeks for indeks, cikti in enumerate(ciktilar)}
+    if not hedefGruplari:
+        return (("Seçili hedefler", tuple(range(len(ciktilar)))),)
+
+    gruplar: list[tuple[str, tuple[int, ...]]] = []
+    tekilIndeksler: list[int] = []
+    kullanilanIndeksler: set[int] = set()
+    for hedefGrubu in hedefGruplari:
+        grupIndeksleri = tuple(
+            hedefIndeksleri[hedef]
+            for hedef in hedefGrubu.hedefler
+            if hedef in hedefIndeksleri and hedefIndeksleri[hedef] not in kullanilanIndeksler
+        )
+        kullanilanIndeksler.update(grupIndeksleri)
+        if not grupIndeksleri:
+            continue
+        if hedefGrubu.cidrMi:
+            gruplar.append((hedefGrubu.kaynakGirdi, grupIndeksleri))
+        else:
+            tekilIndeksler.extend(grupIndeksleri)
+
+    tekilIndeksler.extend(
+        indeks for indeks in range(len(ciktilar)) if indeks not in kullanilanIndeksler
+    )
+    if tekilIndeksler:
+        gruplar.append(("Seçili hedefler", tuple(tekilIndeksler)))
+    return tuple(gruplar)
+
+
+def _smbKesinBulgusuVarMi(kontrolSonucu: KontrolSonucu) -> bool:
+    # SMBv1 acikligini veya imzalama zorunlulugu eksikligini kesin bulgu sayar.
+    kanitlar = _kanitlariSozlugeCevir(kontrolSonucu)
+    return kanitlar.get("smbV1") == "true" or kanitlar.get("imzalamaZorunlu") == "false"
+
+
+def _cidrEkranGoruntusuOzetiniGoster(
+    cidrOzetleri: tuple[tuple[str, int, int], ...],
+    tumEkranGoruntuleri: bool,
+) -> None:
+    # CIDR basina uygun, uretilen ve kota nedeniyle atlanan PNG sayilarini gosterir.
+    if not cidrOzetleri or not any(uretilenSayisi for _, _, uretilenSayisi in cidrOzetleri):
+        return
+    tablo = Table(title="CIDR ekran görüntüsü özeti")
+    tablo.add_column("CIDR")
+    tablo.add_column("Uygun")
+    tablo.add_column("Üretilen")
+    tablo.add_column("Sınır nedeniyle atlanan")
+    for kaynakGirdi, uygunSayisi, uretilenSayisi in cidrOzetleri:
+        tablo.add_row(
+            kaynakGirdi,
+            str(uygunSayisi),
+            str(uretilenSayisi),
+            str(uygunSayisi - uretilenSayisi),
+        )
+    konsol.print(tablo)
+    if tumEkranGoruntuleri:
+        konsol.print("[dim]--all-screenshots: CIDR başına PNG sınırı kaldırıldı.[/dim]")
 
 
 def _taramaOzetiniGoster(ciktilar: tuple[CalismaCiktisiProtokolu, ...]) -> None:
@@ -1385,6 +1650,7 @@ def _evidenceDosyaAdlariniTamamla[CalismaCiktisiT: CalismaCiktisiProtokolu](
         CalismaCiktisiT,
         replace(
             calismaCiktisi,
+            kanitKlasoru=adlandirilmisDosyalar.kanitKlasoru,
             hamCiktiDosyalari=adlandirilmisDosyalar.hamCiktiDosyalari,
             normalizeKanitYolu=adlandirilmisDosyalar.normalizeKanitYolu,
             kanitDosyasiOzetleri=adlandirilmisDosyalar.kanitDosyasiOzetleri,
@@ -1399,11 +1665,18 @@ def _ekranGoruntusunuTamamla[CalismaCiktisiT: CalismaCiktisiProtokolu](
     yoluGoster: bool = True,
 ) -> CalismaCiktisiT:
     # PNG kanitini evidence listesine ekler ve secilen cikti dizinine kopyalar.
-    ekranGoruntusuOzeti = ekranGoruntusuOlustur(
-        calismaCiktisi.kanitKlasoru,
-        kontrolTanimi,
-        calismaCiktisi.kontrolSonucu,
-    )
+    if kontrolTanimi.kontrolKimligi in OZEL_GORSEL_KONTROLLERI:
+        ekranGoruntusuOzeti = ozelTekliEkranGoruntusuOlustur(
+            calismaCiktisi.kanitKlasoru,
+            kontrolTanimi,
+            calismaCiktisi.kontrolSonucu,
+        )
+    else:
+        ekranGoruntusuOzeti = ekranGoruntusuOlustur(
+            calismaCiktisi.kanitKlasoru,
+            kontrolTanimi,
+            calismaCiktisi.kontrolSonucu,
+        )
     ciktiDizini = ekranGoruntusuDizini or VARSAYILAN_EKRAN_GORUNTUSU_DIZINI
     disariAktarilanYol = ekranGoruntusunuDisaAktar(
         ekranGoruntusuOzeti.dosyaYolu,

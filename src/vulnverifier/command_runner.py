@@ -95,12 +95,10 @@ def komutuCalistir(
     try:
         while True:
             if iptalDenetimi is not None and iptalDenetimi.iptalIstendiMi():
-                _sureciSonlandir(surec)
                 raise KomutIptalHatasi(dogrulanmisParcalar)
 
             kalanSure = dogrulanmisZamanAsimi - (time.monotonic() - baslangicZamani)
             if kalanSure <= 0:
-                _sureciSonlandir(surec)
                 raise KomutZamanAsimiHatasi(
                     komutParcalari=dogrulanmisParcalar,
                     zamanAsimi=dogrulanmisZamanAsimi,
@@ -142,16 +140,27 @@ def komutuSonucaDonusturerekCalistir(
 
 
 def aktifKomutlariSonlandir() -> None:
-    # Paralel taramalarda calisan tum harici surecleri guvenli bicimde kapatir.
+    # Paralel taramalarda pipe'lara dokunmadan tum surec gruplarini kapatir.
     with _aktifSurecKilidi:
         surecler = tuple(_aktifSurecler)
     for surec in surecler:
-        _sureciSonlandir(surec)
+        if _surecCalisiyorMu(surec):
+            _surecSinyaliGonder(surec, signal.SIGTERM)
+
+    sonlandirmaSonu = time.monotonic() + SONLANDIRMA_BEKLEME_SURESI
+    while any(_surecCalisiyorMu(surec) for surec in surecler):
+        if time.monotonic() >= sonlandirmaSonu:
+            break
+        time.sleep(IPTAL_KONTROL_ARALIGI)
+
+    for surec in surecler:
+        if _surecCalisiyorMu(surec):
+            _surecSinyaliGonder(surec, signal.SIGKILL)
 
 
 def _sureciSonlandir(surec: subprocess.Popen[str]) -> None:
     # Once surec grubunu sonlandirir, yanit gelmezse grubu zorla kapatir.
-    if surec.poll() is not None:
+    if not _surecCalisiyorMu(surec):
         return
 
     _surecSinyaliGonder(surec, signal.SIGTERM)
@@ -159,7 +168,20 @@ def _sureciSonlandir(surec: subprocess.Popen[str]) -> None:
         surec.communicate(timeout=SONLANDIRMA_BEKLEME_SURESI)
     except subprocess.TimeoutExpired:
         _surecSinyaliGonder(surec, signal.SIGKILL)
-        surec.communicate()
+        try:
+            surec.communicate()
+        except (OSError, ValueError):
+            pass
+    except (OSError, ValueError):
+        pass
+
+
+def _surecCalisiyorMu(surec: subprocess.Popen[str]) -> bool:
+    # Eszamanli kapanmis sureclerde poll hatasini calisiyor olarak yorumlamaz.
+    try:
+        return surec.poll() is None
+    except OSError:
+        return False
 
 
 def _surecSinyaliGonder(surec: subprocess.Popen[str], sinyal: signal.Signals) -> None:
@@ -171,12 +193,8 @@ def _surecSinyaliGonder(surec: subprocess.Popen[str], sinyal: signal.Signals) ->
             surec.terminate()
         else:
             surec.kill()
-    except (OSError, ProcessLookupError):
-        if surec.poll() is None:
-            if sinyal is signal.SIGTERM:
-                surec.terminate()
-            else:
-                surec.kill()
+    except OSError:
+        pass
 
 
 def _komutParcalariniDogrula(komutParcalari: Sequence[str]) -> tuple[str, ...]:
